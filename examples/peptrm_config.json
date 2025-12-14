@@ -1,0 +1,53 @@
+{
+    "project_name": "PepTRM",
+    "wandb_dir": "wandb",
+    "logs_dir": "logs",
+    "downsample_interval": 5000,
+    "schema_inline": {
+        "loss_key": "train/loss",
+        "step_key": "train/step",
+        "primary_metric": "train/token_accuracy",
+        "primary_metric_name": "Token Acc",
+        "per_step_pattern": "train/ce_step_{i}",
+        "num_steps": 8,
+        "validation_sets": {
+            "val_easy": "Val (Easy)",
+            "val_hard": "Val (Hard)",
+            "val_proteometools": "ProteomeTools",
+            "val_nine_species": "Nine-Species"
+        },
+        "groups": [
+            {
+                "name": "training",
+                "display_name": "TRAINING",
+                "metrics": {
+                    "train/loss": {"display": "Loss", "format": ".4f", "higher_is_better": false},
+                    "train/token_accuracy": {"display": "Token Acc", "format": ".1%", "higher_is_better": true},
+                    "train/sequence_accuracy": {"display": "Seq Acc", "format": ".1%", "higher_is_better": true},
+                    "train/mass_error_da": {"display": "Mass Error", "format": ".1f", "higher_is_better": false},
+                    "train/ppm_error": {"display": "PPM Error", "format": ".0f", "higher_is_better": false}
+                }
+            },
+            {
+                "name": "recursion",
+                "display_name": "RECURSION METRICS",
+                "metrics": {
+                    "recursion/accuracy_gain": {"display": "Accuracy Gain", "format": "+.1%", "higher_is_better": true},
+                    "recursion/total_edits": {"display": "Total Edits", "format": ".1%", "higher_is_better": false},
+                    "recursion/converged_by_step": {"display": "Converged Step", "format": ".0f", "higher_is_better": false}
+                }
+            },
+            {
+                "name": "curriculum",
+                "display_name": "CURRICULUM",
+                "metrics": {
+                    "curriculum/stage_idx": {"display": "Stage", "format": ".0f", "higher_is_better": false},
+                    "curriculum/min_length": {"display": "Min Length", "format": ".0f", "higher_is_better": false},
+                    "curriculum/max_length": {"display": "Max Length", "format": ".0f", "higher_is_better": false},
+                    "curriculum/peak_dropout": {"display": "Peak Dropout", "format": ".0%", "higher_is_better": false},
+                    "curriculum/clean_data_ratio": {"display": "Clean Ratio", "format": ".0%", "higher_is_better": false}
+                }
+            }
+        ]
+    }
+}

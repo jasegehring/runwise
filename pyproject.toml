@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "runwise"
+version = "0.1.0"
+description = "Token-efficient ML training run analysis for AI agents"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "PepTRM Team"}
+]
+keywords = [
+    "machine-learning",
+    "wandb",
+    "training",
+    "analysis",
+    "llm",
+    "ai-assistant",
+    "mcp"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = []  # No required dependencies - uses stdlib only
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "black",
+    "ruff",
+]
+
+[project.scripts]
+runwise = "runwise.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/jasegehring/runwise"
+Documentation = "https://github.com/jasegehring/runwise#readme"
+Repository = "https://github.com/jasegehring/runwise"
+Issues = "https://github.com/jasegehring/runwise/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["runwise*", "mcp_server*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]  # Line length handled by black
