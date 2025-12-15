@@ -1,0 +1,33 @@
+{
+    "project_name": "Example ML Project",
+    "wandb_dir": "wandb",
+    "logs_dir": "logs",
+    "schema_inline": {
+        "loss_key": "train/loss",
+        "step_key": "_step",
+        "primary_metric": "val/accuracy",
+        "primary_metric_name": "Val Accuracy",
+        "groups": [
+            {
+                "name": "training",
+                "display_name": "TRAINING",
+                "metrics": {
+                    "train/loss": {"display": "Loss", "format": ".4f", "higher_is_better": false},
+                    "train/accuracy": {"display": "Accuracy", "format": ".1%", "higher_is_better": true}
+                }
+            },
+            {
+                "name": "validation",
+                "display_name": "VALIDATION",
+                "metrics": {
+                    "val/loss": {"display": "Val Loss", "format": ".4f", "higher_is_better": false},
+                    "val/accuracy": {"display": "Val Accuracy", "format": ".1%", "higher_is_better": true}
+                }
+            }
+        ],
+        "validation_sets": {
+            "val": "Validation",
+            "test": "Test"
+        }
+    }
+}

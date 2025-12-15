@@ -190,10 +190,11 @@ Currently no tests. When adding tests:
 ## Publishing Checklist
 
 Before PyPI release:
-- [ ] Update URLs in pyproject.toml (replace "yourusername")
-- [ ] Add LICENSE file
-- [ ] Verify all imports work after pip install
-- [ ] Test CLI entry point
+- [x] Update URLs in pyproject.toml
+- [x] Add LICENSE file
+- [x] Verify all imports work after pip install
+- [x] Test CLI entry point
+- [ ] Add unit tests
 - [ ] Consider adding py.typed marker
 
 Build and publish:

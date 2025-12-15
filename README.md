@@ -19,7 +19,7 @@ Runwise parses W&B and local training logs, generating condensed summaries optim
 pip install runwise
 
 # Or from source:
-git clone https://github.com/yourusername/runwise
+git clone https://github.com/jasegehring/runwise
 cd runwise
 pip install -e .
 ```
@@ -40,10 +40,16 @@ runwise run abc123xyz
 
 # Compare two runs
 runwise compare run_a run_b
+runwise compare run_a run_b -f val             # Filter to validation metrics only
+runwise compare run_a run_b -d                 # Show config differences
 
 # Show hyperparameters/config
 runwise config                                 # Latest run
 runwise config abc123                          # Specific run
+
+# Show run context (name, notes, tags)
+runwise notes                                  # Latest run
+runwise notes abc123                           # Specific run
 
 # Find best run by metric
 runwise best val_loss                          # Lower is better (default)
@@ -51,11 +57,13 @@ runwise best accuracy --max                    # Higher is better
 runwise best val_loss -n 20                    # Consider last 20 runs
 
 # Get downsampled history (handles million-step runs efficiently)
-runwise history -k loss,val_loss              # Latest run, 500 samples
+runwise history                               # Auto-detects common metrics
+runwise history -k loss,val_loss              # Specify keys explicitly
 runwise history abc123 -k loss -n 100         # Specific run, 100 samples
 
 # Get history statistics (even more compact)
-runwise stats -k loss,val_loss,grad_norm
+runwise stats                                 # Auto-detects common metrics
+runwise stats -k loss,val_loss,grad_norm      # Specify keys explicitly
 
 # List available metric keys
 runwise keys                                   # Latest run
