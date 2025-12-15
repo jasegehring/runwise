@@ -38,8 +38,9 @@ The main class providing all analysis functionality:
 - `list_runs(limit)` - Enumerate W&B runs from local directory
 - `get_latest_run()` - Get the most recent/active run
 - `find_run(run_id)` - Find specific run by ID
-- `summarize_run(run)` - Generate token-efficient summary
+- `summarize_run(run)` - Generate token-efficient summary (includes run context if available)
 - `compare_runs(run_a, run_b)` - Side-by-side metric comparison
+- `get_run_context(run)` - Get full run context (name, notes, tags, group)
 - `get_live_status()` - Parse output.log for live training status
 - Local log methods for JSONL files
 
@@ -64,11 +65,15 @@ runwise list                          # List recent runs
 runwise latest                        # Summarize latest run
 runwise run <ID>                      # Summarize specific run
 runwise compare <A> <B>               # Compare two runs
-runwise history -k loss,val_loss      # Get downsampled history (CSV)
-runwise history <ID> -k loss -n 100   # Specific run, 100 samples
-runwise stats -k loss,val_loss        # Get history statistics only
+runwise compare <A> <B> -f val        # Compare only validation metrics
+runwise compare <A> <B> -d            # Include config differences
+runwise notes [ID]                    # Show run context (name, notes, tags)
+runwise history [ID]                  # Get downsampled history (auto-detects keys)
+runwise history -k loss,val_loss      # Specify keys explicitly
+runwise stats [ID]                    # Get history statistics (auto-detects keys)
+runwise stats -k loss,val_loss        # Specify keys explicitly
 runwise keys [ID]                     # List available metric keys
-runwise live                          # Show live training status
+runwise live                          # Show live training status (includes run ID)
 runwise local [file]                  # List/analyze local logs
 runwise init [--name]                 # Initialize runwise.json
 ```
@@ -120,15 +125,41 @@ A 10GB history file with 10 million steps produces the same ~3000 token output a
 1. Anomaly detection (plateaus, divergence, overfitting)
 2. TensorBoard/MLflow support
 3. ASCII charts for training curves
-4. Run tagging and notes
+
+## Run Context (Names, Notes, Tags)
+
+Runwise supports user-provided run descriptions to give AI agents semantic context about each run. This is extracted from W&B's local metadata.
+
+**How users provide context in W&B:**
+```python
+import wandb
+
+# Set at init time
+wandb.init(
+    name="lr-sweep-0.001",  # Short descriptive name
+    notes="Testing learning rate 0.001 with new augmentation pipeline. Hypothesis: lower LR will reduce overfitting.",
+    tags=["sweep", "lr-test", "augmentation"],
+    group="lr-sweep"  # Group related runs together
+)
+
+# Or update during/after run
+wandb.run.notes = "Updated: found better results with warmup"
+```
+
+**Accessing run context:**
+- CLI: `runwise notes [run_id]` - Get full run context
+- CLI: `runwise latest` or `runwise run <ID>` - Summaries include context if available
+- MCP: `get_run_context` tool - Returns name, notes, tags, group
+- MCP: `list_runs` - Shows names and tags in run list
 
 ## MCP Server
 
 The MCP server (`mcp_server/server.py`) exposes these tools:
-- `list_runs` - List recent training runs
-- `analyze_run` - Detailed analysis of specific run
+- `list_runs` - List recent training runs (shows names/tags if available)
+- `analyze_run` - Detailed analysis of specific run (includes run context)
 - `analyze_latest` - Analyze latest/active run
 - `compare_runs` - Compare two runs
+- `get_run_context` - Get run context (name, notes, tags, group)
 - `live_status` - Live training status
 - `analyze_local_log` - Analyze local log file
 
@@ -193,15 +224,18 @@ twine upload dist/*
 
 | File | Purpose |
 |------|---------|
-| `runwise/core.py:35` | RunAnalyzer class |
-| `runwise/core.py:54` | list_runs() |
-| `runwise/core.py:121` | summarize_run() |
-| `runwise/core.py:225` | compare_runs() |
-| `runwise/core.py:266` | get_history() - downsampled history |
-| `runwise/core.py:294` | _downsample_jsonl() - efficient sampling |
-| `runwise/core.py:434` | get_history_stats() - stats only |
-| `runwise/core.py:498` | list_available_keys() |
+| `runwise/core.py:23` | RunInfo dataclass (includes name, notes, tags, group) |
+| `runwise/core.py:49` | RunAnalyzer class |
+| `runwise/core.py:68` | list_runs() |
+| `runwise/core.py:253` | summarize_run() (includes run context) |
+| `runwise/core.py:410` | get_run_context() - full run context |
+| `runwise/core.py:485` | compare_runs() |
+| `runwise/core.py:526` | get_history() - downsampled history |
+| `runwise/core.py:554` | _downsample_jsonl() - efficient sampling |
+| `runwise/core.py:694` | get_history_stats() - stats only |
+| `runwise/core.py:758` | list_available_keys() |
 | `runwise/config.py:23` | MetricSchema |
 | `runwise/config.py:101` | RunwiseConfig |
-| `runwise/cli.py:164` | CLI main() |
+| `runwise/cli.py:81` | cmd_notes() - CLI notes command |
+| `runwise/cli.py:199` | CLI main() |
 | `mcp_server/server.py:32` | MCPServer class |

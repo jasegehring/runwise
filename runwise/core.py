@@ -31,12 +31,19 @@ class RunInfo:
     metrics: dict = None
     config: dict = None
     state: str = "unknown"  # running, finished, crashed, unknown
+    # User-provided context about the run
+    name: str = ""  # Display name (e.g., "lr-sweep-0.001")
+    notes: str = ""  # Natural language description of what's being tested
+    tags: list = None  # Tags like ["sweep", "baseline", "ablation"]
+    group: str = ""  # Group name for related runs (e.g., sweep name)
 
     def __post_init__(self):
         if self.metrics is None:
             self.metrics = {}
         if self.config is None:
             self.config = {}
+        if self.tags is None:
+            self.tags = []
 
 
 class RunAnalyzer:
@@ -125,18 +132,23 @@ class RunAnalyzer:
         config_file = directory / "files" / "config.yaml"
         if config_file.exists():
             run_info.config = self._parse_wandb_config(config_file)
-        else:
-            # Try wandb-metadata.json as fallback
-            metadata_file = directory / "files" / "wandb-metadata.json"
-            if metadata_file.exists():
-                try:
-                    with open(metadata_file) as f:
-                        metadata = json.load(f)
-                    # Extract args if present
-                    if "args" in metadata:
-                        run_info.config["_args"] = metadata["args"]
-                except Exception:
-                    pass
+
+        # Load metadata for run context (name, notes, tags, group)
+        metadata_file = directory / "files" / "wandb-metadata.json"
+        if metadata_file.exists():
+            try:
+                with open(metadata_file) as f:
+                    metadata = json.load(f)
+                # Extract user-provided run context
+                run_info.name = metadata.get("displayName", "")
+                run_info.notes = metadata.get("notes", "")
+                run_info.tags = metadata.get("tags", [])
+                run_info.group = metadata.get("group", "")
+                # Extract args as fallback config
+                if not run_info.config and "args" in metadata:
+                    run_info.config["_args"] = metadata["args"]
+            except Exception:
+                pass
 
         # Detect run state
         run_info.state = self._detect_run_state(directory)
@@ -250,6 +262,21 @@ class RunAnalyzer:
         runtime_hrs = runtime / 3600 if runtime else 0
         lines.append(f"=== {self.config.project_name} Run Summary ===")
         lines.append(f"Run: {run.run_id} | Step: {step:,} | Runtime: {runtime_hrs:.1f}h")
+
+        # Run context (name, notes, tags, group) - provides semantic context
+        if run.name:
+            lines.append(f"Name: {run.name}")
+        if run.group:
+            lines.append(f"Group: {run.group}")
+        if run.tags:
+            lines.append(f"Tags: {', '.join(run.tags)}")
+        if run.notes:
+            # Truncate long notes for token efficiency, preserve first ~200 chars
+            notes_display = run.notes[:200] + "..." if len(run.notes) > 200 else run.notes
+            # Replace newlines with spaces for compact display
+            notes_display = notes_display.replace("\n", " ").strip()
+            lines.append(f"Notes: {notes_display}")
+
         lines.append("")
 
         # Metric groups
@@ -341,6 +368,15 @@ class RunAnalyzer:
                 f"{primary_str:>12}"
             )
 
+            # Show run context on second line if available (token-efficient)
+            context_parts = []
+            if run.name:
+                context_parts.append(run.name[:30])
+            if run.tags:
+                context_parts.append(f"[{', '.join(run.tags[:3])}]")
+            if context_parts:
+                lines.append(f"  └─ {' '.join(context_parts)}")
+
         return "\n".join(lines)
 
     def get_config(self, run: RunInfo) -> str:
@@ -368,6 +404,45 @@ class RunAnalyzer:
                 value_str = str(value)
 
             lines.append(f"  {key}: {value_str}")
+
+        return "\n".join(lines)
+
+    def get_run_context(self, run: RunInfo) -> str:
+        """
+        Get full run context (name, notes, tags, group) for a run.
+
+        This provides the complete user-provided description of what the run
+        is testing, what variables are being swept, hypotheses, etc.
+        """
+        lines = [f"RUN CONTEXT: {run.run_id}", ""]
+
+        if run.name:
+            lines.append(f"Name: {run.name}")
+        else:
+            lines.append("Name: (not set)")
+
+        if run.group:
+            lines.append(f"Group: {run.group}")
+
+        if run.tags:
+            lines.append(f"Tags: {', '.join(run.tags)}")
+        else:
+            lines.append("Tags: (none)")
+
+        lines.append("")
+
+        if run.notes:
+            lines.append("Notes:")
+            # Preserve full notes with original formatting
+            for line in run.notes.split("\n"):
+                lines.append(f"  {line}")
+        else:
+            lines.append("Notes: (none)")
+            lines.append("")
+            lines.append("Tip: Set notes in W&B with:")
+            lines.append("  wandb.init(notes='Testing lr=0.001 with new augmentation')")
+            lines.append("  # or after init:")
+            lines.append("  run.notes = 'Description of what this run tests'")
 
         return "\n".join(lines)
 
@@ -444,16 +519,38 @@ class RunAnalyzer:
 
         return "\n".join(lines)
 
-    def compare_runs(self, run_a: RunInfo, run_b: RunInfo) -> str:
-        """Compare two runs side-by-side."""
+    def compare_runs(
+        self,
+        run_a: RunInfo,
+        run_b: RunInfo,
+        filter_prefix: str = None,
+        show_config_diff: bool = False
+    ) -> str:
+        """
+        Compare two runs side-by-side.
+
+        Args:
+            run_a: First run to compare
+            run_b: Second run to compare
+            filter_prefix: Only show metrics starting with this prefix (e.g., 'val', 'train')
+            show_config_diff: Include config differences at the end
+        """
         lines = [f"COMPARISON: {run_a.run_id} vs {run_b.run_id}", ""]
-        lines.append(f"{'Metric':<20} {'Run A':>12} {'Run B':>12} {'Delta':>10}")
-        lines.append("-" * 60)
+
+        # Show run names if available
+        if run_a.name or run_b.name:
+            lines.append(f"  A: {run_a.name or '(unnamed)'}")
+            lines.append(f"  B: {run_b.name or '(unnamed)'}")
+            lines.append("")
+
+        lines.append(f"{'Metric':<25} {'Run A':>12} {'Run B':>12} {'Delta':>10}")
+        lines.append("-" * 65)
 
         # Collect all metrics from both runs
         all_keys = set(run_a.metrics.keys()) | set(run_b.metrics.keys())
 
         # Filter to numeric metrics
+        matched_count = 0
         for key in sorted(all_keys):
             val_a = run_a.metrics.get(key)
             val_b = run_b.metrics.get(key)
@@ -464,6 +561,13 @@ class RunAnalyzer:
             # Skip internal metrics
             if key.startswith("_"):
                 continue
+
+            # Apply filter if specified
+            if filter_prefix:
+                if not key.lower().startswith(filter_prefix.lower()):
+                    continue
+
+            matched_count += 1
 
             # Format values
             if isinstance(val_a, float) and val_a <= 1 and isinstance(val_b, float) and val_b <= 1:
@@ -478,10 +582,48 @@ class RunAnalyzer:
                 delta_str = f"{delta:+.4f}"
 
             # Truncate key for display
-            display_key = key[:20] if len(key) > 20 else key
-            lines.append(f"{display_key:<20} {str_a:>12} {str_b:>12} {delta_str:>10}")
+            display_key = key[:25] if len(key) > 25 else key
+            lines.append(f"{display_key:<25} {str_a:>12} {str_b:>12} {delta_str:>10}")
+
+        if filter_prefix and matched_count == 0:
+            lines.append(f"(no metrics matching filter '{filter_prefix}')")
+
+        # Show config diff if requested
+        if show_config_diff:
+            config_diff = self._get_config_diff(run_a.config, run_b.config)
+            if config_diff:
+                lines.append("")
+                lines.append("CONFIG DIFFERENCES:")
+                lines.append(f"{'Parameter':<25} {'Run A':>15} {'Run B':>15}")
+                lines.append("-" * 60)
+                for key, (val_a, val_b) in config_diff.items():
+                    display_key = key[:25] if len(key) > 25 else key
+                    str_a = str(val_a)[:15] if val_a is not None else "(not set)"
+                    str_b = str(val_b)[:15] if val_b is not None else "(not set)"
+                    lines.append(f"{display_key:<25} {str_a:>15} {str_b:>15}")
+            else:
+                lines.append("")
+                lines.append("CONFIG DIFFERENCES: (none - configs are identical)")
 
         return "\n".join(lines)
+
+    def _get_config_diff(self, config_a: dict, config_b: dict) -> dict:
+        """Get config parameters that differ between two runs."""
+        diff = {}
+        all_keys = set(config_a.keys()) | set(config_b.keys())
+
+        for key in sorted(all_keys):
+            # Skip internal keys
+            if key.startswith("_"):
+                continue
+
+            val_a = config_a.get(key)
+            val_b = config_b.get(key)
+
+            if val_a != val_b:
+                diff[key] = (val_a, val_b)
+
+        return diff
 
     # ==================== History (Downsampled) ====================
 
@@ -750,15 +892,20 @@ class RunAnalyzer:
 
     def get_live_status(self) -> str:
         """Get status of currently running training."""
-        lines = ["LIVE TRAINING STATUS:", ""]
-
         latest = self.get_latest_run()
         if not latest:
             return "No active run found"
 
+        lines = ["LIVE TRAINING STATUS:", ""]
+        lines.append(f"Run ID: {latest.run_id}")
+        if latest.name:
+            lines.append(f"Name: {latest.name}")
+        lines.append(f"State: {latest.state}")
+        lines.append("")
+
         output_file = latest.directory / "files" / "output.log"
         if not output_file.exists():
-            return "Run found but no output.log yet"
+            return "\n".join(lines) + "\n(no output.log yet)"
 
         # Read last 100 lines
         with open(output_file) as f:

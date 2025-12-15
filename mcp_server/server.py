@@ -117,6 +117,15 @@ class MCPServer:
                             "run_b": {
                                 "type": "string",
                                 "description": "Second run ID"
+                            },
+                            "filter": {
+                                "type": "string",
+                                "description": "Filter metrics by prefix (e.g., 'val', 'train')"
+                            },
+                            "show_config_diff": {
+                                "type": "boolean",
+                                "description": "Include config differences in output",
+                                "default": false
                             }
                         },
                         "required": ["run_a", "run_b"]
@@ -211,6 +220,19 @@ class MCPServer:
                     }
                 },
                 {
+                    "name": "get_run_context",
+                    "description": "Get run context (name, notes, tags, group). Returns user-provided descriptions of what the run is testing, variable sweeps, hypotheses, etc. Use this to understand the intent behind a run.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "run_id": {
+                                "type": "string",
+                                "description": "Run ID (uses latest if not specified)"
+                            }
+                        }
+                    }
+                },
+                {
                     "name": "find_best_run",
                     "description": "Find the best run by a specific metric. Returns ranked list of runs.",
                     "inputSchema": {
@@ -265,7 +287,12 @@ class MCPServer:
                 elif not run_b:
                     result = f"Run '{arguments.get('run_b')}' not found"
                 else:
-                    result = self.analyzer.compare_runs(run_a, run_b)
+                    result = self.analyzer.compare_runs(
+                        run_a,
+                        run_b,
+                        filter_prefix=arguments.get("filter"),
+                        show_config_diff=arguments.get("show_config_diff", False)
+                    )
 
             elif tool_name == "live_status":
                 result = self.analyzer.get_live_status()
@@ -319,6 +346,14 @@ class MCPServer:
                     result = f"Run not found"
                 else:
                     result = self.analyzer.get_config(run)
+
+            elif tool_name == "get_run_context":
+                run_id = arguments.get("run_id")
+                run = self.analyzer.find_run(run_id) if run_id else self.analyzer.get_latest_run()
+                if not run:
+                    result = f"Run not found"
+                else:
+                    result = self.analyzer.get_run_context(run)
 
             elif tool_name == "find_best_run":
                 metric = arguments.get("metric")

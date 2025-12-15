@@ -8,6 +8,7 @@ Usage:
     runwise run <ID>                    # Summarize specific run
     runwise compare <A> <B>             # Compare two runs
     runwise config [ID]                 # Show hyperparameters/config
+    runwise notes [ID]                  # Show run context (name, notes, tags)
     runwise best <metric>               # Find best run by metric
     runwise history -k loss,val_loss    # Get downsampled history (CSV)
     runwise stats -k loss,val_loss      # Get history statistics
@@ -64,7 +65,12 @@ def cmd_compare(analyzer: RunAnalyzer, args):
         print(f"Run '{args.run_b}' not found")
         return
 
-    print(analyzer.compare_runs(run_a, run_b))
+    print(analyzer.compare_runs(
+        run_a,
+        run_b,
+        filter_prefix=args.filter,
+        show_config_diff=args.diff
+    ))
 
 
 def cmd_config(analyzer: RunAnalyzer, args):
@@ -76,6 +82,17 @@ def cmd_config(analyzer: RunAnalyzer, args):
         return
 
     print(analyzer.get_config(run))
+
+
+def cmd_notes(analyzer: RunAnalyzer, args):
+    """Show run context (name, notes, tags, group)."""
+    run = analyzer.find_run(args.run_id) if args.run_id else analyzer.get_latest_run()
+
+    if not run:
+        print("Run not found")
+        return
+
+    print(analyzer.get_run_context(run))
 
 
 def cmd_best(analyzer: RunAnalyzer, args):
@@ -95,7 +112,17 @@ def cmd_history(analyzer: RunAnalyzer, args):
         print(f"Run not found")
         return
 
-    keys = [k.strip() for k in args.keys.split(",")]
+    # If no keys specified, try to auto-detect common metrics
+    if not args.keys:
+        keys = _get_default_metric_keys(analyzer, run)
+        if not keys:
+            print(f"No keys specified. Use -k/--keys or see available keys:")
+            print(analyzer.list_available_keys(run))
+            return
+        print(f"(auto-detected keys: {', '.join(keys)})\n")
+    else:
+        keys = [k.strip() for k in args.keys.split(",")]
+
     print(analyzer.get_history(run, keys, samples=args.samples))
 
 
@@ -107,8 +134,58 @@ def cmd_stats(analyzer: RunAnalyzer, args):
         print(f"Run not found")
         return
 
-    keys = [k.strip() for k in args.keys.split(",")]
+    # If no keys specified, try to auto-detect common metrics
+    if not args.keys:
+        keys = _get_default_metric_keys(analyzer, run)
+        if not keys:
+            print(f"No keys specified. Use -k/--keys or see available keys:")
+            print(analyzer.list_available_keys(run))
+            return
+        print(f"(auto-detected keys: {', '.join(keys)})\n")
+    else:
+        keys = [k.strip() for k in args.keys.split(",")]
+
     print(analyzer.get_history_stats(run, keys))
+
+
+def _get_default_metric_keys(analyzer: RunAnalyzer, run) -> list[str]:
+    """Try to auto-detect common metric keys from run history."""
+    # Common metric patterns to look for
+    common_patterns = [
+        "loss", "train/loss", "train_loss",
+        "val_loss", "val/loss", "validation_loss",
+        "accuracy", "train/accuracy", "acc",
+        "val_accuracy", "val/accuracy", "val_acc",
+        "lr", "learning_rate",
+    ]
+
+    # Get available keys from the run
+    available = set()
+    history_file = run.directory / "files" / "wandb-history.jsonl"
+    if history_file.exists():
+        import json
+        with open(history_file, 'r') as f:
+            for i, line in enumerate(f):
+                if i >= 5:  # Only check first few lines
+                    break
+                try:
+                    record = json.loads(line.strip())
+                    available.update(k for k in record.keys() if not k.startswith("_"))
+                except:
+                    continue
+
+    # Find matching keys
+    found_keys = []
+    for pattern in common_patterns:
+        if pattern in available:
+            found_keys.append(pattern)
+        # Also check for partial matches
+        for key in available:
+            if pattern in key.lower() and key not in found_keys:
+                found_keys.append(key)
+
+    # Limit to reasonable number
+    return found_keys[:6]
 
 
 def cmd_keys(analyzer: RunAnalyzer, args):
@@ -219,10 +296,16 @@ Examples:
     p_compare = subparsers.add_parser("compare", help="Compare two runs")
     p_compare.add_argument("run_a", help="First run ID")
     p_compare.add_argument("run_b", help="Second run ID")
+    p_compare.add_argument("-f", "--filter", help="Filter metrics by prefix (e.g., 'val', 'train')")
+    p_compare.add_argument("-d", "--diff", action="store_true", help="Show config differences")
 
     # config
     p_config = subparsers.add_parser("config", help="Show hyperparameters/config for a run")
     p_config.add_argument("run_id", nargs="?", help="Run ID (uses latest if omitted)")
+
+    # notes
+    p_notes = subparsers.add_parser("notes", help="Show run context (name, notes, tags, group)")
+    p_notes.add_argument("run_id", nargs="?", help="Run ID (uses latest if omitted)")
 
     # best
     p_best = subparsers.add_parser("best", help="Find the best run by a metric")
@@ -234,13 +317,13 @@ Examples:
     # history (downsampled)
     p_history = subparsers.add_parser("history", help="Get downsampled training history (CSV)")
     p_history.add_argument("run_id", nargs="?", help="Run ID (uses latest if omitted)")
-    p_history.add_argument("-k", "--keys", required=True, help="Comma-separated metric keys (e.g., 'loss,val_loss')")
+    p_history.add_argument("-k", "--keys", help="Comma-separated metric keys (auto-detects if omitted)")
     p_history.add_argument("-n", "--samples", type=int, default=500, help="Number of samples (default: 500)")
 
     # stats (even more compact)
     p_stats = subparsers.add_parser("stats", help="Get history statistics (min/max/mean)")
     p_stats.add_argument("run_id", nargs="?", help="Run ID (uses latest if omitted)")
-    p_stats.add_argument("-k", "--keys", required=True, help="Comma-separated metric keys")
+    p_stats.add_argument("-k", "--keys", help="Comma-separated metric keys (auto-detects if omitted)")
 
     # keys (list available)
     p_keys = subparsers.add_parser("keys", help="List available metric keys in a run")
@@ -280,6 +363,7 @@ Examples:
         "run": cmd_run,
         "compare": cmd_compare,
         "config": cmd_config,
+        "notes": cmd_notes,
         "best": cmd_best,
         "history": cmd_history,
         "stats": cmd_stats,
