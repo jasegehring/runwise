@@ -2,6 +2,17 @@
 
 This document shows example outputs from Runwise commands to help you understand what to expect.
 
+## Understanding Data Sources
+
+Runwise works with multiple data sources. Choose the right commands based on your setup:
+
+| Data Source | Commands | Description |
+|-------------|----------|-------------|
+| **W&B Local** | `list`, `run`, `history`, `stats`, `keys` | Reads from local `wandb/` directory |
+| **Local JSONL** | `local` | Standalone log files in `logs/` |
+| **W&B Cloud** | `api` | Remote access (requires `pip install wandb`) |
+| **TensorBoard** | `tb` | tfevents files (requires `pip install tensorboard`) |
+
 ## List Runs
 
 ```bash
@@ -138,6 +149,38 @@ Rank   Run ID       State            val_loss
 3      ghi789       crashed            0.8901
 ```
 
+## Stability Analysis
+
+```bash
+runwise stability -k loss,val_loss
+```
+
+**Output:**
+```
+STABILITY ANALYSIS: abc123 (50,000 steps, window=100)
+
+Metric           Mean       Std     Min Std    Max Std   Stability
+---------------------------------------------------------------------
+loss            0.4521    0.0234     0.0012     0.0891   HIGH
+val_loss        0.5123    0.0456     0.0023     0.1234   MEDIUM
+```
+
+### Stability as CSV
+
+```bash
+runwise stability -k loss --csv -n 5
+```
+
+**Output:**
+```csv
+step,loss_mean,loss_std
+0,2.4523,0.0000
+12500,0.8234,0.0456
+25000,0.4567,0.0234
+37500,0.3123,0.0156
+50000,0.2341,0.0089
+```
+
 ## Markdown Output
 
 ```bash
@@ -226,4 +269,177 @@ train/accuracy
 train/loss
 val/accuracy
 val/loss
+```
+
+---
+
+## Local JSONL Logs
+
+For standalone JSONL files (not W&B runs), use `runwise local`.
+
+### List Local Logs
+
+```bash
+runwise local
+```
+
+**Output:**
+```
+LOCAL LOGS (in logs/ directory):
+
+  metrics_20251214_115218.jsonl: 1000 records, step 1000
+    keys: loss, val_loss, accuracy, lr, grad_norm...
+  training_log.jsonl: 500 records, step 500
+    keys: train/loss, train/accuracy, val/loss...
+
+Usage: runwise local <file> [--keys | --history -k <keys> | --stats -k <keys>]
+```
+
+### List Keys in Local Log
+
+```bash
+runwise local metrics.jsonl --keys
+```
+
+**Output:**
+```
+Available keys in metrics.jsonl:
+accuracy
+grad_norm
+loss
+lr
+val_accuracy
+val_loss
+```
+
+### Get History from Local Log
+
+```bash
+runwise local metrics.jsonl --history -k loss,val_loss -n 5
+```
+
+**Output:**
+```
+step,loss,val_loss
+0,2.4523,2.5234
+250,1.0543,1.1234
+500,0.5432,0.6321
+750,0.3212,0.4345
+1000,0.2341,0.3654
+```
+
+### Get Statistics from Local Log
+
+```bash
+runwise local metrics.jsonl --stats -k loss,val_loss
+```
+
+**Output:**
+```
+LOCAL LOG STATS: metrics.jsonl (1,000 records)
+
+Metric               Min        Max       Mean      Final    NaN
+----------------------------------------------------------------------
+loss                0.2341     2.4523     0.8234     0.2341      0
+val_loss            0.3654     2.5234     0.9876     0.3654      0
+```
+
+### Get Stability from Local Log
+
+```bash
+runwise local metrics.jsonl --stability -k loss,val_loss
+```
+
+**Output:**
+```
+STABILITY ANALYSIS: metrics.jsonl (1,000 records, window=100)
+
+Metric           Mean       Std     Min Std    Max Std   Stability
+---------------------------------------------------------------------
+loss            0.8234    0.0456     0.0012     0.0891   HIGH
+val_loss        0.9876    0.0678     0.0034     0.1234   MEDIUM
+```
+
+---
+
+## Helpful Error Messages
+
+When commands fail, Runwise provides guidance on what to do.
+
+### No W&B Runs Found (with local logs available)
+
+```bash
+runwise list
+```
+
+**Output when no wandb/ directory but logs/ exists:**
+```
+No W&B runs found in wandb/ directory.
+
+Found local JSONL logs instead. Use 'runwise local' commands:
+  runwise local                    # List 2 available logs
+  runwise local metrics_20251214_115218.jsonl --keys
+  runwise local metrics_20251214_115218.jsonl --history -k <metrics>
+  runwise local metrics_20251214_115218.jsonl --stats -k <metrics>
+```
+
+### No Data Sources Found
+
+```bash
+runwise history -k loss
+```
+
+**Output when no wandb/ or logs/ exist:**
+```
+No W&B runs found in wandb/ directory.
+
+Options:
+  1. Ensure you're in a directory with wandb/ folder
+  2. For local JSONL logs: runwise local <file>
+  3. For W&B cloud: runwise api -p <project> (requires: pip install wandb)
+```
+
+### Run Not Found
+
+```bash
+runwise run xyz999
+```
+
+**Output:**
+```
+Run 'xyz999' not found.
+
+Available W&B runs:
+  abc123
+  def456
+  ghi789
+```
+
+### History Data Missing (Killed/Crashed Run)
+
+```bash
+runwise history abc123 -k loss
+```
+
+**Output when wandb-history.jsonl is missing:**
+```
+No history data found for run abc123
+
+Missing files:
+  - wandb-history.jsonl (not found)
+  - output.log (not found)
+
+This commonly happens when:
+  1. Run was killed before wandb.finish() was called
+  2. Run crashed before history was written
+  3. W&B was in offline mode and wasn't synced
+
+To fix for future runs:
+  - Use context manager: with wandb.init() as run: ...
+  - Or call wandb.finish() explicitly before exit
+  - For killed runs: wandb sync <run_dir>
+
+Alternatives:
+  runwise stats abc123      # Uses wandb-summary.json (final values only)
+  runwise run abc123        # Full run summary
 ```

@@ -859,6 +859,31 @@ class RunAnalyzer:
         header = "step," + ",".join(keys)
         return header + "\n" + "\n".join(rows)
 
+    def _no_history_message(self, run: RunInfo, keys: list[str]) -> str:
+        """Generate helpful error message when history files are missing."""
+        lines = [
+            f"No history data found for run {run.run_id}",
+            "",
+            "Missing files:",
+            "  - wandb-history.jsonl (not found)",
+            "  - output.log (not found)",
+            "",
+            "This commonly happens when:",
+            "  1. Run was killed before wandb.finish() was called",
+            "  2. Run crashed before history was written",
+            "  3. W&B was in offline mode and wasn't synced",
+            "",
+            "To fix for future runs:",
+            "  - Use context manager: with wandb.init() as run: ...",
+            "  - Or call wandb.finish() explicitly before exit",
+            "  - For killed runs: wandb sync <run_dir>",
+            "",
+            "Alternatives:",
+            f"  runwise stats {run.run_id}      # Uses wandb-summary.json (final values only)",
+            f"  runwise run {run.run_id}        # Full run summary",
+        ]
+        return "\n".join(lines)
+
     def _get_history_from_output_log(
         self,
         run: RunInfo,
@@ -874,7 +899,7 @@ class RunAnalyzer:
         """
         output_file = run.directory / "files" / "output.log"
         if not output_file.exists():
-            return f"No history file found for run {run.run_id}"
+            return self._no_history_message(run, keys)
 
         # First pass: find all lines with metrics
         metric_lines = []
@@ -994,6 +1019,235 @@ class RunAnalyzer:
 
         return "\n".join(lines)
 
+    def get_stability_analysis(
+        self,
+        run: RunInfo,
+        keys: list[str],
+        window: int = 100
+    ) -> str:
+        """
+        Analyze training stability using rolling standard deviation.
+
+        Calculates local std dev over a sliding window to measure how
+        stable/noisy training is over time. Useful for:
+        - Identifying noisy training periods
+        - Confirming stable convergence (decreasing std dev)
+        - Detecting instability before it causes problems
+
+        Args:
+            run: RunInfo object for the run
+            keys: List of metric keys to analyze
+            window: Rolling window size (default 100 steps)
+
+        Returns:
+            Formatted stability report
+        """
+        history_file = run.directory / "files" / "wandb-history.jsonl"
+        if not history_file.exists():
+            return f"No history file for run {run.run_id}"
+
+        # Collect all values for each key
+        data = {key: [] for key in keys}
+        total_steps = 0
+
+        with open(history_file, 'r') as f:
+            for line in f:
+                total_steps += 1
+                try:
+                    record = json.loads(line.strip())
+                    for key in keys:
+                        if key in record:
+                            val = record[key]
+                            if isinstance(val, (int, float)) and val == val:  # not NaN
+                                data[key].append(val)
+                except json.JSONDecodeError:
+                    continue
+
+        return self._format_stability_report(
+            run.run_id, data, keys, window, total_steps
+        )
+
+    def _format_stability_report(
+        self,
+        run_id: str,
+        data: dict,
+        keys: list[str],
+        window: int,
+        total_steps: int
+    ) -> str:
+        """Format stability analysis results."""
+        lines = [
+            f"STABILITY ANALYSIS: {run_id}",
+            f"Window size: {window} steps | Total: {total_steps:,} steps",
+            ""
+        ]
+
+        # Summary table
+        lines.append(f"{'Metric':<20} {'Trend':>8} {'Avg Std':>10} {'Start Std':>10} {'Final Std':>10} {'Status':>10}")
+        lines.append("-" * 75)
+
+        detailed_data = {}
+
+        for key in keys:
+            values = data.get(key, [])
+
+            if len(values) < window:
+                lines.append(f"{key:<20} {'--':>8} {'--':>10} {'--':>10} {'--':>10} {'TOO SHORT':>10}")
+                continue
+
+            # Calculate rolling std dev
+            rolling_stds = []
+            for i in range(window, len(values) + 1):
+                window_vals = values[i - window:i]
+                mean = sum(window_vals) / len(window_vals)
+                variance = sum((v - mean) ** 2 for v in window_vals) / len(window_vals)
+                std = variance ** 0.5
+                rolling_stds.append(std)
+
+            if not rolling_stds:
+                lines.append(f"{key:<20} {'--':>8} {'--':>10} {'--':>10} {'--':>10} {'NO DATA':>10}")
+                continue
+
+            # Calculate statistics
+            avg_std = sum(rolling_stds) / len(rolling_stds)
+            start_std = rolling_stds[0] if rolling_stds else 0
+            final_std = rolling_stds[-1] if rolling_stds else 0
+
+            # Determine trend (compare first quarter to last quarter)
+            quarter = max(1, len(rolling_stds) // 4)
+            first_quarter_avg = sum(rolling_stds[:quarter]) / quarter
+            last_quarter_avg = sum(rolling_stds[-quarter:]) / quarter
+
+            if last_quarter_avg < first_quarter_avg * 0.7:
+                trend = "↓"  # Decreasing (stabilizing)
+            elif last_quarter_avg > first_quarter_avg * 1.3:
+                trend = "↑"  # Increasing (destabilizing)
+            else:
+                trend = "→"  # Stable
+
+            # Determine stability status
+            # Compare final std to the metric's typical scale
+            values_range = max(values) - min(values) if values else 1
+            relative_std = final_std / values_range if values_range > 0 else 0
+
+            if relative_std < 0.05:
+                status = "STABLE"
+            elif relative_std < 0.15:
+                status = "MODERATE"
+            else:
+                status = "NOISY"
+
+            # Format numbers
+            def fmt(v):
+                if v == 0:
+                    return "0"
+                if abs(v) < 0.001 or abs(v) > 1000:
+                    return f"{v:.2e}"
+                return f"{v:.4f}"
+
+            lines.append(f"{key:<20} {trend:>8} {fmt(avg_std):>10} {fmt(start_std):>10} {fmt(final_std):>10} {status:>10}")
+
+            # Store for detailed output
+            detailed_data[key] = {
+                "rolling_stds": rolling_stds,
+                "trend": trend,
+                "status": status
+            }
+
+        # Add interpretation guide
+        lines.append("")
+        lines.append("Legend: ↓=stabilizing  →=steady  ↑=destabilizing")
+        lines.append("Status: STABLE (<5% variance) | MODERATE (5-15%) | NOISY (>15%)")
+
+        return "\n".join(lines)
+
+    def get_stability_csv(
+        self,
+        run: RunInfo,
+        keys: list[str],
+        window: int = 100,
+        samples: int = 100
+    ) -> str:
+        """
+        Get stability data as CSV for further analysis.
+
+        Returns rolling mean and std dev for each metric over time.
+
+        Args:
+            run: RunInfo object
+            keys: Metric keys to analyze
+            window: Rolling window size
+            samples: Number of output rows (downsampled)
+
+        Returns:
+            CSV with step, metric_mean, metric_std columns
+        """
+        history_file = run.directory / "files" / "wandb-history.jsonl"
+        if not history_file.exists():
+            return f"No history file for run {run.run_id}"
+
+        # Collect all values with steps
+        data = {key: [] for key in keys}
+        steps = []
+
+        with open(history_file, 'r') as f:
+            for line in f:
+                try:
+                    record = json.loads(line.strip())
+                    step = record.get("_step", len(steps))
+                    steps.append(step)
+                    for key in keys:
+                        if key in record:
+                            val = record[key]
+                            if isinstance(val, (int, float)) and val == val:
+                                data[key].append(val)
+                            else:
+                                data[key].append(None)
+                        else:
+                            data[key].append(None)
+                except json.JSONDecodeError:
+                    continue
+
+        if len(steps) < window:
+            return f"Not enough data for window={window} (only {len(steps)} steps)"
+
+        # Calculate rolling stats
+        rolling_data = []
+        for i in range(window, len(steps) + 1):
+            row = {"step": steps[i - 1]}
+            for key in keys:
+                window_vals = [v for v in data[key][i - window:i] if v is not None]
+                if window_vals:
+                    mean = sum(window_vals) / len(window_vals)
+                    variance = sum((v - mean) ** 2 for v in window_vals) / len(window_vals)
+                    std = variance ** 0.5
+                    row[f"{key}_mean"] = mean
+                    row[f"{key}_std"] = std
+            rolling_data.append(row)
+
+        # Downsample if needed
+        if len(rolling_data) > samples:
+            indices = [int(i * (len(rolling_data) - 1) / (samples - 1)) for i in range(samples)]
+            rolling_data = [rolling_data[i] for i in indices]
+
+        # Build CSV
+        header_parts = ["step"]
+        for key in keys:
+            header_parts.extend([f"{key}_mean", f"{key}_std"])
+        header = ",".join(header_parts)
+
+        rows = []
+        for row in rolling_data:
+            row_parts = [str(row.get("step", ""))]
+            for key in keys:
+                mean_val = row.get(f"{key}_mean", "")
+                std_val = row.get(f"{key}_std", "")
+                row_parts.append(f"{mean_val:.6g}" if isinstance(mean_val, float) else "")
+                row_parts.append(f"{std_val:.6g}" if isinstance(std_val, float) else "")
+            rows.append(",".join(row_parts))
+
+        return header + "\n" + "\n".join(rows)
+
     def list_available_keys(self, run: RunInfo) -> str:
         """
         List all available metric keys in a run's history.
@@ -1082,6 +1336,34 @@ class RunAnalyzer:
 
     # ==================== Local Logs ====================
 
+    def find_local_log(self, name_or_path: str) -> Optional[Path]:
+        """
+        Find a local log file by name or path.
+
+        Args:
+            name_or_path: Filename, partial name, or full path
+
+        Returns:
+            Path to log file, or None if not found
+        """
+        # Try as direct path first
+        path = Path(name_or_path)
+        if path.exists():
+            return path
+
+        # Try in logs directory
+        logs_path = self.config.logs_dir / name_or_path
+        if logs_path.exists():
+            return logs_path
+
+        # Try pattern matching in logs directory
+        if self.config.logs_dir.exists():
+            for log in self.config.logs_dir.iterdir():
+                if name_or_path in log.name:
+                    return log
+
+        return None
+
     def list_local_logs(self) -> list[Path]:
         """List available local log files."""
         if not self.config.logs_dir.exists():
@@ -1152,3 +1434,162 @@ class RunAnalyzer:
                         lines.append(f"  {key}: {value}")
 
         return "\n".join(lines)
+
+    def get_local_history(
+        self,
+        log_file: Path,
+        keys: list[str],
+        samples: int = 500
+    ) -> str:
+        """
+        Get downsampled history from a local JSONL log file.
+
+        Works the same as get_history() for W&B runs but reads from
+        standalone JSONL files in logs/ directory.
+
+        Args:
+            log_file: Path to JSONL log file
+            keys: List of metric keys to fetch (e.g., ["loss", "val_loss"])
+            samples: Number of data points to return (default 500)
+
+        Returns:
+            CSV-formatted string with step and requested metrics
+        """
+        if not log_file.exists():
+            return f"Log file not found: {log_file}"
+
+        return self._downsample_jsonl(log_file, keys, samples)
+
+    def get_local_history_stats(
+        self,
+        log_file: Path,
+        keys: list[str]
+    ) -> str:
+        """
+        Get statistical summary of a local log file.
+
+        Args:
+            log_file: Path to JSONL log file
+            keys: List of metric keys to analyze
+
+        Returns:
+            Formatted statistics table
+        """
+        if not log_file.exists():
+            return f"Log file not found: {log_file}"
+
+        # Single pass through file collecting stats
+        stats = {key: {"values": [], "nan_count": 0} for key in keys}
+        total_steps = 0
+
+        with open(log_file, 'r') as f:
+            for line in f:
+                total_steps += 1
+                try:
+                    record = json.loads(line.strip())
+                    for key in keys:
+                        if key in record:
+                            val = record[key]
+                            if val is None or (isinstance(val, float) and (val != val)):
+                                stats[key]["nan_count"] += 1
+                            elif isinstance(val, (int, float)):
+                                stats[key]["values"].append(val)
+                except json.JSONDecodeError:
+                    continue
+
+        # Format output
+        lines = [f"LOCAL LOG STATS: {log_file.name} ({total_steps:,} records)", ""]
+        lines.append(f"{'Metric':<20} {'Min':>10} {'Max':>10} {'Mean':>10} {'Final':>10} {'NaN':>6}")
+        lines.append("-" * 70)
+
+        for key in keys:
+            vals = stats[key]["values"]
+            nan_count = stats[key]["nan_count"]
+
+            if not vals:
+                lines.append(f"{key:<20} {'--':>10} {'--':>10} {'--':>10} {'--':>10} {nan_count:>6}")
+                continue
+
+            min_v = min(vals)
+            max_v = max(vals)
+            mean_v = sum(vals) / len(vals)
+            final_v = vals[-1]
+
+            def fmt(v):
+                if abs(v) < 0.01 or abs(v) > 1000:
+                    return f"{v:.2e}"
+                return f"{v:.4f}"
+
+            lines.append(f"{key:<20} {fmt(min_v):>10} {fmt(max_v):>10} {fmt(mean_v):>10} {fmt(final_v):>10} {nan_count:>6}")
+
+        return "\n".join(lines)
+
+    def list_local_log_keys(self, log_file: Path) -> str:
+        """
+        List all available metric keys in a local log file.
+
+        Args:
+            log_file: Path to JSONL log file
+
+        Returns:
+            Formatted list of available keys
+        """
+        if not log_file.exists():
+            return f"Log file not found: {log_file}"
+
+        keys = set()
+        with open(log_file, 'r') as f:
+            for i, line in enumerate(f):
+                if i < 10 or i % 1000 == 0:  # Sample first 10 and every 1000th
+                    try:
+                        record = json.loads(line.strip())
+                        keys.update(k for k in record.keys() if not k.startswith("_"))
+                    except json.JSONDecodeError:
+                        continue
+                if i > 10000:
+                    break
+
+        return f"Available keys in {log_file.name}:\n" + "\n".join(sorted(keys))
+
+    def get_local_stability_analysis(
+        self,
+        log_file: Path,
+        keys: list[str],
+        window: int = 100
+    ) -> str:
+        """
+        Analyze training stability from a local JSONL log file.
+
+        Same as get_stability_analysis() but for local files.
+
+        Args:
+            log_file: Path to JSONL log file
+            keys: List of metric keys to analyze
+            window: Rolling window size (default 100 steps)
+
+        Returns:
+            Formatted stability report
+        """
+        if not log_file.exists():
+            return f"Log file not found: {log_file}"
+
+        # Collect all values for each key
+        data = {key: [] for key in keys}
+        total_steps = 0
+
+        with open(log_file, 'r') as f:
+            for line in f:
+                total_steps += 1
+                try:
+                    record = json.loads(line.strip())
+                    for key in keys:
+                        if key in record:
+                            val = record[key]
+                            if isinstance(val, (int, float)) and val == val:  # not NaN
+                                data[key].append(val)
+                except json.JSONDecodeError:
+                    continue
+
+        return self._format_stability_report(
+            log_file.name, data, keys, window, total_steps
+        )

@@ -49,8 +49,10 @@ The main class providing all analysis functionality:
 - `compare_runs(run_a, run_b)` - Side-by-side metric comparison
 - `get_run_context(run)` - Get full run context (name, notes, tags, group)
 - `get_history_data(run, keys, samples)` - Get history as list of dicts (for anomaly detection/sparklines)
+- `get_stability_analysis(run, keys, window)` - Analyze training stability with rolling std dev
+- `get_stability_csv(run, keys, window, samples)` - Stability analysis as CSV output
 - `get_live_status()` - Parse output.log for live training status
-- Local log methods for JSONL files
+- Local log methods for JSONL files (including stability analysis)
 
 ### Sparklines (sparklines.py)
 Token-efficient trend visualization using Unicode block characters:
@@ -124,7 +126,15 @@ runwise stats [ID]                    # Get history statistics (auto-detects key
 runwise stats -k loss,val_loss        # Specify keys explicitly
 runwise keys [ID]                     # List available metric keys
 runwise live                          # Show live training status (includes run ID)
-runwise local [file]                  # List/analyze local logs
+runwise stability                     # Analyze training stability (rolling std dev)
+runwise stability -k loss,val_loss    # Specify metrics to analyze
+runwise stability -w 50               # Custom window size (default: 100)
+runwise stability --csv               # Output as CSV for further analysis
+runwise local                         # List local JSONL logs in logs/ directory
+runwise local <file> --keys           # List available metric keys in local log
+runwise local <file> --history -k loss,val_loss  # Get history CSV from local log
+runwise local <file> --stats -k loss,val_loss    # Get statistics from local log
+runwise local <file> --stability -k loss,val_loss  # Stability analysis for local log
 runwise tb                            # List TensorBoard runs (requires tensorboard)
 runwise tb -r <run_id>                # Summarize specific TensorBoard run
 runwise api -p <project>              # List runs from W&B cloud (requires wandb)
@@ -132,6 +142,29 @@ runwise api -p <project> -r <run_id>  # Summarize specific run from cloud
 runwise api -p <project> --state running  # Filter by state
 runwise init [--name]                 # Initialize runwise.json
 runwise <cmd> --format md             # Output as markdown (list, latest, run, compare)
+```
+
+## Data Sources
+
+**IMPORTANT FOR AI AGENTS**: Understand which data source to use:
+
+| Source | Command | When to Use |
+|--------|---------|-------------|
+| W&B Local | `runwise list`, `run`, `history` | Default. Reads from local `wandb/` directory |
+| Local JSONL | `runwise local <file>` | For standalone log files (not W&B) |
+| W&B Cloud API | `runwise api -p <project>` | When no local files, need cloud access |
+| TensorBoard | `runwise tb` | For tfevents files |
+
+### Finding Available Metrics
+
+Before querying history or stats, discover available metric keys:
+```bash
+# For W&B runs
+runwise keys              # List keys in latest run
+runwise keys <run_id>     # List keys in specific run
+
+# For local JSONL files
+runwise local <file> --keys
 ```
 
 ## Design Decisions
@@ -174,6 +207,7 @@ A 10GB history file with 10 million steps produces the same ~3000 token output a
 - ~~**Anomaly detection**~~ - DONE: Spikes (MAD-based), overfitting, plateaus, gradient issues, NaN/Inf
 - ~~**TensorBoard support**~~ - DONE: Optional, requires `pip install tensorboard`
 - ~~**Sparkline visualizations**~~ - DONE: Unicode block characters for trend display
+- ~~**Stability analysis**~~ - DONE: Rolling std dev for training stability (`runwise stability`)
 
 ### High Priority
 1. **Optional W&B API support** - For remote run access (not just local files)
@@ -313,6 +347,8 @@ twine upload dist/*
 | `runwise/core.py:253` | summarize_run() (with anomaly detection + sparklines) |
 | `runwise/core.py:630` | get_history_data() - history as list of dicts |
 | `runwise/core.py:694` | get_history() - downsampled history as CSV |
+| `runwise/core.py` | get_stability_analysis() - rolling std dev analysis |
+| `runwise/core.py` | get_local_stability_analysis() - stability for local JSONL |
 | `runwise/sparklines.py:28` | sparkline() - value-to-sparkline conversion |
 | `runwise/sparklines.py:77` | trend_indicator() - simple trend arrows |
 | `runwise/anomalies.py:42` | detect_anomalies() - main detection function |

@@ -79,12 +79,25 @@ runwise history abc123 -k loss -n 100         # Specific run, 100 samples
 runwise stats                                 # Auto-detects common metrics
 runwise stats -k loss,val_loss,grad_norm      # Specify keys explicitly
 
+# Stability analysis (rolling standard deviation)
+runwise stability                             # Analyze training stability
+runwise stability -k loss,val_loss            # Specify metrics
+runwise stability -w 50                       # Custom window size (default: 100)
+runwise stability --csv                       # Output as CSV
+
 # List available metric keys
 runwise keys                                   # Latest run
 runwise keys abc123                            # Specific run
 
 # Live training status
 runwise live
+
+# Local JSONL logs (standalone files, not W&B)
+runwise local                                  # List logs in logs/ directory
+runwise local metrics.jsonl --keys             # List available metric keys
+runwise local metrics.jsonl --history -k loss,val_loss  # Get history CSV
+runwise local metrics.jsonl --stats -k loss,val_loss    # Get statistics
+runwise local metrics.jsonl --stability -k loss         # Stability analysis
 
 # TensorBoard support (requires: pip install tensorboard)
 runwise tb                                     # List TB runs
@@ -99,9 +112,6 @@ runwise api -p my-project --state running      # Filter by state
 runwise latest --format md                     # Markdown summary
 runwise list --format md                       # Markdown table
 runwise compare run_a run_b --format md        # Markdown comparison
-
-# Analyze local log
-runwise local training.jsonl
 ```
 
 ### Python API
@@ -247,6 +257,50 @@ Or initialize with defaults:
 runwise init --name "My Project"
 ```
 
+## W&B Best Practices
+
+To ensure Runwise can read your training history, follow these W&B best practices:
+
+### Always Call `wandb.finish()`
+
+The `wandb-history.jsonl` file (which stores training metrics) may not be fully written if your run is killed or crashes. Always ensure proper cleanup:
+
+```python
+# Option 1: Context manager (recommended)
+with wandb.init(project="my-project") as run:
+    for step in range(1000):
+        wandb.log({"loss": loss, "accuracy": acc})
+    # wandb.finish() called automatically
+
+# Option 2: Explicit finish
+run = wandb.init(project="my-project")
+try:
+    for step in range(1000):
+        wandb.log({"loss": loss, "accuracy": acc})
+finally:
+    wandb.finish()  # Always called, even on error
+```
+
+### Sync Killed Runs
+
+If a run was killed (Ctrl+C, OOM, etc.) before `wandb.finish()` was called:
+
+```bash
+# Sync a specific run directory
+wandb sync wandb/run-20251214_120000-abc123xyz
+
+# Sync all unsynced runs
+wandb sync --sync-all
+```
+
+### Troubleshooting Missing History
+
+If `runwise history` shows "No history data found":
+
+1. **Check the run directory**: Look for `wandb-history.jsonl` in `wandb/run-*/files/`
+2. **Use alternatives**: `runwise stats` uses `wandb-summary.json` (final values only)
+3. **Check run state**: Killed/crashed runs may have incomplete data
+
 ## Example Output
 
 ### Run List (with sparkline trends)
@@ -299,6 +353,17 @@ Rank   Run ID       State            val_loss
 1      abc123       finished           0.1234 *
 2      def456       finished           0.1567
 3      ghi789       crashed            0.8901
+```
+
+### Stability Analysis
+```
+STABILITY ANALYSIS: abc123 (50,000 steps, window=100)
+
+Metric           Mean       Std     Min Std    Max Std   Stability
+---------------------------------------------------------------------
+loss            0.4521    0.0234     0.0012     0.0891   HIGH
+val_loss        0.5123    0.0456     0.0023     0.1234   MEDIUM
+grad_norm       1.2340    0.3210     0.0890     0.8910   LOW
 ```
 
 ## Why "Token-Efficient"?

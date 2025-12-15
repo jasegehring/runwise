@@ -1,23 +1,39 @@
 #!/usr/bin/env python3
 """
-Command-line interface for Runwise.
+Command-line interface for Runwise - Token-efficient ML training run analysis.
 
-Usage:
-    runwise list                        # List recent runs (with sparkline trends)
-    runwise list --no-spark             # List without sparklines (faster)
-    runwise latest                      # Summarize latest run (with anomaly detection)
-    runwise run <ID>                    # Summarize specific run
-    runwise compare <A> <B>             # Compare two runs
-    runwise config [ID]                 # Show hyperparameters/config
-    runwise notes [ID]                  # Show run context (name, notes, tags)
-    runwise best <metric>               # Find best run by metric
-    runwise history -k loss,val_loss    # Get downsampled history (CSV)
-    runwise stats -k loss,val_loss      # Get history statistics
-    runwise keys [ID]                   # List available metric keys
-    runwise live                        # Show live training status
-    runwise local                       # List/analyze local logs
-    runwise tb                          # TensorBoard runs (requires tensorboard)
-    runwise init                        # Initialize runwise.json config
+IMPORTANT FOR AI AGENTS:
+- This tool reads from LOCAL wandb/ directories, NOT from W&B cloud API
+- For W&B cloud access without local files, use: runwise api -p <project>
+- For local JSONL logs (not W&B), use: runwise local <file>
+
+DATA SOURCES:
+1. W&B Local (default): Reads wandb/run-*/files/ directories
+2. W&B Cloud API: Use 'runwise api' (requires: pip install wandb)
+3. Local JSONL: Use 'runwise local' for standalone log files
+4. TensorBoard: Use 'runwise tb' (requires: pip install tensorboard)
+
+COMMON WORKFLOWS:
+
+  # W&B runs (reads from local wandb/ directory)
+  runwise list                        # List recent runs
+  runwise latest                      # Analyze latest run
+  runwise run <ID>                    # Analyze specific run
+  runwise compare <A> <B>             # Compare two runs
+  runwise history -k loss,val_loss    # Get training history as CSV
+  runwise keys                        # List available metric keys
+
+  # Local JSONL logs (standalone files, not W&B)
+  runwise local                       # List logs in logs/ directory
+  runwise local <file> --keys         # List available keys in file
+  runwise local <file> --history -k loss,val_loss  # Get history CSV
+  runwise local <file> --stats -k loss,val_loss    # Get statistics
+
+  # W&B Cloud API (when no local files)
+  runwise api -p my-project           # List runs from W&B cloud
+
+  # Output formats
+  runwise latest --format md          # Markdown for GitHub/Notion
 """
 
 import argparse
@@ -28,8 +44,48 @@ from .core import RunAnalyzer
 from .formatters.markdown import MarkdownFormatter, to_markdown
 
 
+def _no_wandb_runs_message(analyzer: RunAnalyzer) -> str:
+    """Generate helpful message when no W&B runs are found."""
+    lines = [
+        "No W&B runs found in wandb/ directory.",
+        "",
+    ]
+
+    # Check for local logs
+    local_logs = analyzer.list_local_logs()
+    if local_logs:
+        lines.append("Found local JSONL logs instead. Use 'runwise local' commands:")
+        lines.append(f"  runwise local                    # List {len(local_logs)} available logs")
+        lines.append(f"  runwise local {local_logs[0].name} --keys")
+        lines.append(f"  runwise local {local_logs[0].name} --history -k <metrics>")
+        lines.append(f"  runwise local {local_logs[0].name} --stats -k <metrics>")
+    else:
+        lines.append("Options:")
+        lines.append("  1. Ensure you're in a directory with wandb/ folder")
+        lines.append("  2. For local JSONL logs: runwise local <file>")
+        lines.append("  3. For W&B cloud: runwise api -p <project> (requires: pip install wandb)")
+
+    return "\n".join(lines)
+
+
+def _run_not_found_message(run_id: str, analyzer: RunAnalyzer) -> str:
+    """Generate helpful message when a specific run is not found."""
+    lines = [f"Run '{run_id}' not found.", ""]
+
+    # List available runs
+    runs = analyzer.list_runs(limit=5)
+    if runs:
+        lines.append("Available W&B runs:")
+        for run in runs:
+            lines.append(f"  {run.run_id}")
+    else:
+        lines.append(_no_wandb_runs_message(analyzer))
+
+    return "\n".join(lines)
+
+
 def cmd_list(analyzer: RunAnalyzer, args):
-    """List recent runs."""
+    """List recent W&B runs from local wandb/ directory."""
     runs = analyzer.list_runs(limit=args.limit)
     if runs:
         show_sparklines = not getattr(args, 'no_spark', False)
@@ -42,11 +98,11 @@ def cmd_list(analyzer: RunAnalyzer, args):
 
         print(output)
     else:
-        print("No runs found")
+        print(_no_wandb_runs_message(analyzer))
 
 
 def cmd_latest(analyzer: RunAnalyzer, args):
-    """Summarize latest run."""
+    """Summarize latest W&B run."""
     run = analyzer.get_latest_run()
     if run:
         include_anomalies = not getattr(args, 'no_anomalies', False)
@@ -65,11 +121,11 @@ def cmd_latest(analyzer: RunAnalyzer, args):
 
         print(output)
     else:
-        print("No latest run found")
+        print(_no_wandb_runs_message(analyzer))
 
 
 def cmd_run(analyzer: RunAnalyzer, args):
-    """Summarize specific run."""
+    """Summarize specific W&B run."""
     run = analyzer.find_run(args.run_id)
     if run:
         include_anomalies = not getattr(args, 'no_anomalies', False)
@@ -88,19 +144,19 @@ def cmd_run(analyzer: RunAnalyzer, args):
 
         print(output)
     else:
-        print(f"Run '{args.run_id}' not found")
+        print(_run_not_found_message(args.run_id, analyzer))
 
 
 def cmd_compare(analyzer: RunAnalyzer, args):
-    """Compare two runs."""
+    """Compare two W&B runs."""
     run_a = analyzer.find_run(args.run_a)
     run_b = analyzer.find_run(args.run_b)
 
     if not run_a:
-        print(f"Run '{args.run_a}' not found")
+        print(_run_not_found_message(args.run_a, analyzer))
         return
     if not run_b:
-        print(f"Run '{args.run_b}' not found")
+        print(_run_not_found_message(args.run_b, analyzer))
         return
 
     output = analyzer.compare_runs(
@@ -120,22 +176,28 @@ def cmd_compare(analyzer: RunAnalyzer, args):
 
 
 def cmd_config(analyzer: RunAnalyzer, args):
-    """Show config/hyperparameters for a run."""
+    """Show config/hyperparameters for a W&B run."""
     run = analyzer.find_run(args.run_id) if args.run_id else analyzer.get_latest_run()
 
     if not run:
-        print("Run not found")
+        if args.run_id:
+            print(_run_not_found_message(args.run_id, analyzer))
+        else:
+            print(_no_wandb_runs_message(analyzer))
         return
 
     print(analyzer.get_config(run))
 
 
 def cmd_notes(analyzer: RunAnalyzer, args):
-    """Show run context (name, notes, tags, group)."""
+    """Show run context (name, notes, tags, group) for a W&B run."""
     run = analyzer.find_run(args.run_id) if args.run_id else analyzer.get_latest_run()
 
     if not run:
-        print("Run not found")
+        if args.run_id:
+            print(_run_not_found_message(args.run_id, analyzer))
+        else:
+            print(_no_wandb_runs_message(analyzer))
         return
 
     print(analyzer.get_run_context(run))
@@ -151,11 +213,14 @@ def cmd_best(analyzer: RunAnalyzer, args):
 
 
 def cmd_history(analyzer: RunAnalyzer, args):
-    """Get downsampled training history."""
+    """Get downsampled training history from a W&B run."""
     run = analyzer.find_run(args.run_id) if args.run_id else analyzer.get_latest_run()
 
     if not run:
-        print("Run not found")
+        if args.run_id:
+            print(_run_not_found_message(args.run_id, analyzer))
+        else:
+            print(_no_wandb_runs_message(analyzer))
         return
 
     # If no keys specified, try to auto-detect common metrics
@@ -173,11 +238,14 @@ def cmd_history(analyzer: RunAnalyzer, args):
 
 
 def cmd_stats(analyzer: RunAnalyzer, args):
-    """Get history statistics (even more compact than history)."""
+    """Get history statistics from a W&B run (even more compact than history)."""
     run = analyzer.find_run(args.run_id) if args.run_id else analyzer.get_latest_run()
 
     if not run:
-        print("Run not found")
+        if args.run_id:
+            print(_run_not_found_message(args.run_id, analyzer))
+        else:
+            print(_no_wandb_runs_message(analyzer))
         return
 
     # If no keys specified, try to auto-detect common metrics
@@ -235,14 +303,50 @@ def _get_default_metric_keys(analyzer: RunAnalyzer, run) -> list[str]:
 
 
 def cmd_keys(analyzer: RunAnalyzer, args):
-    """List available metric keys in a run."""
+    """List available metric keys in a W&B run."""
     run = analyzer.find_run(args.run_id) if args.run_id else analyzer.get_latest_run()
 
     if not run:
-        print("Run not found")
+        if args.run_id:
+            print(_run_not_found_message(args.run_id, analyzer))
+        else:
+            print(_no_wandb_runs_message(analyzer))
         return
 
     print(analyzer.list_available_keys(run))
+
+
+def cmd_stability(analyzer: RunAnalyzer, args):
+    """Analyze training stability using rolling standard deviation."""
+    run = analyzer.find_run(args.run_id) if args.run_id else analyzer.get_latest_run()
+
+    if not run:
+        if args.run_id:
+            print(_run_not_found_message(args.run_id, analyzer))
+        else:
+            print(_no_wandb_runs_message(analyzer))
+        return
+
+    # Keys are required for stability analysis
+    if not args.keys:
+        print("Error: -k/--keys is required for stability analysis")
+        print("")
+        print("First, list available keys:")
+        print("  runwise keys")
+        print("")
+        print("Then analyze stability:")
+        print("  runwise stability -k loss,val_loss --window 100")
+        return
+
+    keys = [k.strip() for k in args.keys.split(",")]
+    window = args.window
+
+    if args.csv:
+        # Output rolling stats as CSV
+        print(analyzer.get_stability_csv(run, keys, window=window, samples=args.samples))
+    else:
+        # Output summary report
+        print(analyzer.get_stability_analysis(run, keys, window=window))
 
 
 def cmd_live(analyzer: RunAnalyzer, args):
@@ -251,25 +355,96 @@ def cmd_live(analyzer: RunAnalyzer, args):
 
 
 def cmd_local(analyzer: RunAnalyzer, args):
-    """List or analyze local logs."""
-    if args.file:
-        log_file = Path(args.file)
-        if not log_file.exists():
-            log_file = analyzer.config.logs_dir / args.file
-        print(analyzer.summarize_local_log(log_file))
-    else:
+    """List or analyze local JSONL log files."""
+    # If no file specified, list available logs
+    if not args.file:
         logs = analyzer.list_local_logs()
         if logs:
-            print("LOCAL LOGS:")
-            for log in logs[:10]:
+            print("LOCAL LOGS (in logs/ directory):")
+            print("")
+            for log in logs[:15]:
                 records = analyzer.parse_local_log(log)
                 if records:
                     max_step = max(r.get("step", r.get("_step", 0)) for r in records)
-                    print(f"  {log.name}: {len(records)} records, max step {max_step}")
+                    # Show some available keys
+                    sample_keys = [k for k in records[0].keys() if not k.startswith("_")][:5]
+                    keys_hint = ", ".join(sample_keys)
+                    print(f"  {log.name}: {len(records)} records, step {max_step}")
+                    print(f"    keys: {keys_hint}...")
                 else:
                     print(f"  {log.name}: empty")
+            print("")
+            print("Usage: runwise local <file> [--keys | --history -k <keys> | --stats -k <keys>]")
         else:
-            print("No local logs found")
+            print("No local logs found in logs/ directory")
+            print("")
+            print("Expected location: logs/*.jsonl")
+            print("Or specify path directly: runwise local /path/to/file.jsonl")
+        return
+
+    # Find the log file
+    log_file = analyzer.find_local_log(args.file)
+    if not log_file:
+        print(f"Log file not found: {args.file}")
+        print("")
+        print("Try: runwise local  (to list available logs)")
+        return
+
+    # Handle different modes
+    if getattr(args, 'list_keys', False):
+        # List available keys
+        print(analyzer.list_local_log_keys(log_file))
+        return
+
+    if getattr(args, 'history', False):
+        # Get downsampled history
+        if not args.keys:
+            print("Error: --history requires -k/--keys to specify which metrics")
+            print("")
+            print("First, list available keys:")
+            print(f"  runwise local {args.file} --keys")
+            print("")
+            print("Then get history:")
+            print(f"  runwise local {args.file} --history -k loss,val_loss")
+            return
+        keys = [k.strip() for k in args.keys.split(",")]
+        samples = getattr(args, 'samples', 500)
+        print(analyzer.get_local_history(log_file, keys, samples))
+        return
+
+    if getattr(args, 'stats', False):
+        # Get statistics
+        if not args.keys:
+            print("Error: --stats requires -k/--keys to specify which metrics")
+            print("")
+            print("First, list available keys:")
+            print(f"  runwise local {args.file} --keys")
+            print("")
+            print("Then get stats:")
+            print(f"  runwise local {args.file} --stats -k loss,val_loss")
+            return
+        keys = [k.strip() for k in args.keys.split(",")]
+        print(analyzer.get_local_history_stats(log_file, keys))
+        return
+
+    if getattr(args, 'stability', False):
+        # Get stability analysis
+        if not args.keys:
+            print("Error: --stability requires -k/--keys to specify which metrics")
+            print("")
+            print("First, list available keys:")
+            print(f"  runwise local {args.file} --keys")
+            print("")
+            print("Then analyze stability:")
+            print(f"  runwise local {args.file} --stability -k loss,val_loss --window 100")
+            return
+        keys = [k.strip() for k in args.keys.split(",")]
+        window = getattr(args, 'window', 100)
+        print(analyzer.get_local_stability_analysis(log_file, keys, window=window))
+        return
+
+    # Default: show summary
+    print(analyzer.summarize_local_log(log_file))
 
 
 def cmd_init(analyzer: RunAnalyzer, args):
@@ -396,24 +571,69 @@ def cmd_api(analyzer: RunAnalyzer, args):
                 print("No runs found")
 
     except Exception as e:
-        print(f"Error accessing W&B API: {e}")
+        error_str = str(e).lower()
+        # Detect common authentication/authorization errors
+        if any(term in error_str for term in [
+            "unauthorized", "403", "401", "authentication", "api key",
+            "not logged in", "login", "permission", "forbidden", "netrc"
+        ]):
+            print("W&B API authentication error.")
+            print("")
+            print("You need to log in to W&B first:")
+            print("  wandb login")
+            print("")
+            print("This will open a browser to get your API key, or you can")
+            print("paste it from: https://wandb.ai/authorize")
+            print("")
+            print(f"Original error: {e}")
+        elif "not found" in error_str or "404" in error_str:
+            print(f"Project or entity not found: {args.project}")
+            print("")
+            print("Check that:")
+            print(f"  1. Project '{args.project}' exists")
+            if args.entity:
+                print(f"  2. Entity '{args.entity}' is correct")
+            else:
+                print("  2. You have access to this project")
+            print("  3. You're logged in: wandb login")
+        else:
+            print(f"Error accessing W&B API: {e}")
+            print("")
+            print("Common fixes:")
+            print("  1. Check your internet connection")
+            print("  2. Verify you're logged in: wandb login")
+            print("  3. Check project/entity names are correct")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Runwise: Token-efficient ML training run analysis",
+        description="Runwise: Token-efficient ML training run analysis for AI agents",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  runwise list              # List runs with sparkline trends
-  runwise list --no-spark   # List without sparklines (faster)
-  runwise latest            # Summarize latest run with anomaly detection
-  runwise run abc123        # Summarize specific run
-  runwise compare abc def   # Compare two runs
-  runwise live              # Show live training status
-  runwise tb                # List TensorBoard runs
-  runwise tb --run train_1  # Summarize specific TB run
-  runwise init              # Create runwise.json config
+DATA SOURCES (choose based on your setup):
+
+  W&B Local (default) - reads from local wandb/ directory:
+    runwise list                # List runs
+    runwise latest              # Analyze latest run
+    runwise run <id>            # Analyze specific run
+    runwise history -k loss     # Get training history
+
+  Local JSONL - for standalone log files (not W&B):
+    runwise local               # List files in logs/
+    runwise local <file> --keys # List available metrics
+    runwise local <file> --history -k loss,val_loss
+
+  W&B Cloud API - when no local files (requires: pip install wandb):
+    runwise api -p <project>    # List runs from cloud
+
+  TensorBoard - for tfevents files (requires: pip install tensorboard):
+    runwise tb                  # List TB runs
+
+TIPS FOR AI AGENTS:
+  - Always run 'runwise keys' or 'runwise local <file> --keys' first
+    to discover available metric names before querying history/stats
+  - Use --format md for output suitable for GitHub issues or documentation
+  - The 'history' and 'stats' commands require -k to specify metric keys
         """
     )
 
@@ -476,6 +696,38 @@ Examples:
     p_stats.add_argument("run_id", nargs="?", help="Run ID (uses latest if omitted)")
     p_stats.add_argument("-k", "--keys", help="Comma-separated metric keys (auto-detects if omitted)")
 
+    # stability (rolling std dev analysis)
+    p_stability = subparsers.add_parser(
+        "stability",
+        help="Analyze training stability (rolling std dev)",
+        description="""Analyze training stability using rolling standard deviation.
+
+Measures how stable/noisy training is over time by calculating
+local standard deviation within a sliding window.
+
+Useful for:
+  - Identifying noisy training periods
+  - Confirming stable convergence (decreasing std dev)
+  - Detecting instability before it causes problems
+
+Examples:
+  runwise stability -k loss,val_loss              # Default 100-step window
+  runwise stability -k loss --window 50           # Smaller window (more sensitive)
+  runwise stability -k loss --window 200          # Larger window (smoother)
+  runwise stability -k loss --csv                 # Output as CSV for plotting
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p_stability.add_argument("run_id", nargs="?", help="Run ID (uses latest if omitted)")
+    p_stability.add_argument("-k", "--keys", required=False,
+                             help="Comma-separated metric keys (required)")
+    p_stability.add_argument("-w", "--window", type=int, default=100,
+                             help="Rolling window size in steps (default: 100)")
+    p_stability.add_argument("--csv", action="store_true",
+                             help="Output rolling mean/std as CSV instead of summary")
+    p_stability.add_argument("-n", "--samples", type=int, default=100,
+                             help="Number of CSV rows when using --csv (default: 100)")
+
     # keys (list available)
     p_keys = subparsers.add_parser("keys", help="List available metric keys in a run")
     p_keys.add_argument("run_id", nargs="?", help="Run ID (uses latest if omitted)")
@@ -484,8 +736,39 @@ Examples:
     subparsers.add_parser("live", help="Show live training status")
 
     # local
-    p_local = subparsers.add_parser("local", help="List/analyze local logs")
-    p_local.add_argument("file", nargs="?", help="Log file to analyze")
+    p_local = subparsers.add_parser(
+        "local",
+        help="Analyze local JSONL log files (not W&B runs)",
+        description="""Analyze standalone JSONL log files in logs/ directory.
+
+For W&B runs, use 'runwise list' and 'runwise run <id>' instead.
+This command is for local log files like metrics_*.jsonl.
+
+Examples:
+  runwise local                              # List available local logs
+  runwise local metrics.jsonl                # Show summary of log file
+  runwise local metrics.jsonl --keys         # List available metric keys
+  runwise local metrics.jsonl --history -k loss,val_loss  # Get history CSV
+  runwise local metrics.jsonl --stats -k loss,val_loss    # Get statistics
+  runwise local metrics.jsonl --stability -k loss --window 100  # Stability analysis
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p_local.add_argument("file", nargs="?", help="Log file name or path (omit to list available)")
+    p_local.add_argument("--keys", dest="list_keys", action="store_true",
+                         help="List available metric keys in the log file")
+    p_local.add_argument("--history", action="store_true",
+                         help="Get downsampled history as CSV (requires -k)")
+    p_local.add_argument("--stats", action="store_true",
+                         help="Get statistics (min/max/mean/final) for metrics (requires -k)")
+    p_local.add_argument("--stability", action="store_true",
+                         help="Analyze training stability with rolling std dev (requires -k)")
+    p_local.add_argument("-k", "--metrics", dest="keys",
+                         help="Comma-separated metric keys (e.g., loss,val_loss,accuracy)")
+    p_local.add_argument("-n", "--samples", type=int, default=500,
+                         help="Number of samples for --history (default: 500)")
+    p_local.add_argument("-w", "--window", type=int, default=100,
+                         help="Rolling window size for --stability (default: 100)")
 
     # init
     p_init = subparsers.add_parser("init", help="Initialize configuration")
@@ -532,6 +815,7 @@ Examples:
         "best": cmd_best,
         "history": cmd_history,
         "stats": cmd_stats,
+        "stability": cmd_stability,
         "keys": cmd_keys,
         "live": cmd_live,
         "local": cmd_local,
