@@ -9,15 +9,12 @@ Provides the main RunAnalyzer class that handles:
 """
 
 import json
-import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
-from io import StringIO
 from pathlib import Path
 from typing import Optional
 
-from .config import RunwiseConfig, MetricSchema
+from .config import RunwiseConfig
 
 
 @dataclass
@@ -161,7 +158,6 @@ class RunAnalyzer:
         try:
             # W&B config.yaml has a specific format with 'value' keys
             # Example: learning_rate:\n  value: 0.001
-            import re
             content = config_file.read_text()
 
             # Simple YAML parsing for W&B config format
@@ -324,7 +320,7 @@ class RunAnalyzer:
                             if mid_vals:
                                 variance = sum((v - sum(mid_vals)/len(mid_vals))**2 for v in mid_vals) / len(mid_vals)
                                 if variance < 0.0001:
-                                    lines.append(f"  WARNING: Plateau detected in middle steps")
+                                    lines.append("  WARNING: Plateau detected in middle steps")
             lines.append("")
 
         # Validation metrics
@@ -790,7 +786,7 @@ class RunAnalyzer:
                 rows.append(",".join(row))
 
         if not rows:
-            return f"Could not parse metrics from output.log"
+            return "Could not parse metrics from output.log"
 
         header = "step," + ",".join(keys)
         return header + "\n" + "\n".join(rows)

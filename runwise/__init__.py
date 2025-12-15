@@ -6,7 +6,7 @@ Parses W&B and local logs, generates condensed summaries optimized for LLM conte
 
 __version__ = "0.1.0"
 
+from .config import MetricSchema, RunwiseConfig
 from .core import RunAnalyzer
-from .config import RunwiseConfig, MetricSchema
 
 __all__ = ["RunAnalyzer", "RunwiseConfig", "MetricSchema"]

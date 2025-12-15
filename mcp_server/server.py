@@ -125,7 +125,7 @@ class MCPServer:
                             "show_config_diff": {
                                 "type": "boolean",
                                 "description": "Include config differences in output",
-                                "default": false
+                                "default": False
                             }
                         },
                         "required": ["run_a", "run_b"]
@@ -250,7 +250,7 @@ class MCPServer:
                             "higher_is_better": {
                                 "type": "boolean",
                                 "description": "If true, higher values are better (e.g., accuracy). Default: false (lower is better, e.g., loss)",
-                                "default": false
+                                "default": False
                             }
                         },
                         "required": ["metric"]
@@ -316,7 +316,7 @@ class MCPServer:
                 run_id = arguments.get("run_id")
                 run = self.analyzer.find_run(run_id) if run_id else self.analyzer.get_latest_run()
                 if not run:
-                    result = f"Run not found"
+                    result = "Run not found"
                 else:
                     keys = [k.strip() for k in arguments.get("keys", "").split(",")]
                     samples = arguments.get("samples", 500)
@@ -326,7 +326,7 @@ class MCPServer:
                 run_id = arguments.get("run_id")
                 run = self.analyzer.find_run(run_id) if run_id else self.analyzer.get_latest_run()
                 if not run:
-                    result = f"Run not found"
+                    result = "Run not found"
                 else:
                     keys = [k.strip() for k in arguments.get("keys", "").split(",")]
                     result = self.analyzer.get_history_stats(run, keys)
@@ -335,7 +335,7 @@ class MCPServer:
                 run_id = arguments.get("run_id")
                 run = self.analyzer.find_run(run_id) if run_id else self.analyzer.get_latest_run()
                 if not run:
-                    result = f"Run not found"
+                    result = "Run not found"
                 else:
                     result = self.analyzer.list_available_keys(run)
 
@@ -343,7 +343,7 @@ class MCPServer:
                 run_id = arguments.get("run_id")
                 run = self.analyzer.find_run(run_id) if run_id else self.analyzer.get_latest_run()
                 if not run:
-                    result = f"Run not found"
+                    result = "Run not found"
                 else:
                     result = self.analyzer.get_config(run)
 
@@ -351,7 +351,7 @@ class MCPServer:
                 run_id = arguments.get("run_id")
                 run = self.analyzer.find_run(run_id) if run_id else self.analyzer.get_latest_run()
                 if not run:
-                    result = f"Run not found"
+                    result = "Run not found"
                 else:
                     result = self.analyzer.get_run_context(run)
 

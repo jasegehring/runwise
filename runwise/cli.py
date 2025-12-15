@@ -19,10 +19,9 @@ Usage:
 """
 
 import argparse
-import sys
 from pathlib import Path
 
-from .config import RunwiseConfig, MetricSchema, MetricGroup
+from .config import MetricGroup, MetricSchema, RunwiseConfig
 from .core import RunAnalyzer
 
 
@@ -109,14 +108,14 @@ def cmd_history(analyzer: RunAnalyzer, args):
     run = analyzer.find_run(args.run_id) if args.run_id else analyzer.get_latest_run()
 
     if not run:
-        print(f"Run not found")
+        print("Run not found")
         return
 
     # If no keys specified, try to auto-detect common metrics
     if not args.keys:
         keys = _get_default_metric_keys(analyzer, run)
         if not keys:
-            print(f"No keys specified. Use -k/--keys or see available keys:")
+            print("No keys specified. Use -k/--keys or see available keys:")
             print(analyzer.list_available_keys(run))
             return
         print(f"(auto-detected keys: {', '.join(keys)})\n")
@@ -131,14 +130,14 @@ def cmd_stats(analyzer: RunAnalyzer, args):
     run = analyzer.find_run(args.run_id) if args.run_id else analyzer.get_latest_run()
 
     if not run:
-        print(f"Run not found")
+        print("Run not found")
         return
 
     # If no keys specified, try to auto-detect common metrics
     if not args.keys:
         keys = _get_default_metric_keys(analyzer, run)
         if not keys:
-            print(f"No keys specified. Use -k/--keys or see available keys:")
+            print("No keys specified. Use -k/--keys or see available keys:")
             print(analyzer.list_available_keys(run))
             return
         print(f"(auto-detected keys: {', '.join(keys)})\n")
@@ -171,7 +170,7 @@ def _get_default_metric_keys(analyzer: RunAnalyzer, run) -> list[str]:
                 try:
                     record = json.loads(line.strip())
                     available.update(k for k in record.keys() if not k.startswith("_"))
-                except:
+                except Exception:
                     continue
 
     # Find matching keys
@@ -193,7 +192,7 @@ def cmd_keys(analyzer: RunAnalyzer, args):
     run = analyzer.find_run(args.run_id) if args.run_id else analyzer.get_latest_run()
 
     if not run:
-        print(f"Run not found")
+        print("Run not found")
         return
 
     print(analyzer.list_available_keys(run))
@@ -286,7 +285,7 @@ Examples:
     p_list.add_argument("-n", "--limit", type=int, default=15, help="Number of runs to show")
 
     # latest
-    p_latest = subparsers.add_parser("latest", help="Summarize latest run")
+    subparsers.add_parser("latest", help="Summarize latest run")
 
     # run
     p_run = subparsers.add_parser("run", help="Summarize specific run")
@@ -330,7 +329,7 @@ Examples:
     p_keys.add_argument("run_id", nargs="?", help="Run ID (uses latest if omitted)")
 
     # live
-    p_live = subparsers.add_parser("live", help="Show live training status")
+    subparsers.add_parser("live", help="Show live training status")
 
     # local
     p_local = subparsers.add_parser("local", help="List/analyze local logs")

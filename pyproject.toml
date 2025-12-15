@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "runwise"
-version = "0.2.1"
+version = "0.2.2"
 description = "Token-efficient ML training run analysis for AI agents"
 readme = "README.md"
 license = "MIT"
@@ -63,5 +63,7 @@ target-version = ["py310"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 ignore = ["E501"]  # Line length handled by black
