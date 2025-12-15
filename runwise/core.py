@@ -280,6 +280,7 @@ class RunAnalyzer:
         if include_anomalies and history:
             anomalies = detect_anomalies(
                 history,
+                config=self.config.anomaly_config,
                 loss_key=schema.loss_key,
                 val_loss_key="val_loss",  # Common default
             )

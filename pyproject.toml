@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "runwise"
-version = "0.2.3"
+version = "0.2.4"
 description = "Token-efficient ML training run analysis for AI agents"
 readme = "README.md"
 license = "MIT"

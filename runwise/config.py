@@ -2,6 +2,7 @@
 Configuration for Runwise.
 
 Defines metric schemas that map project-specific metrics to standardized categories.
+Includes configurable anomaly detection thresholds.
 """
 
 import json
@@ -9,6 +10,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
+
+from .anomalies import AnomalyConfig
 
 
 @dataclass
@@ -118,6 +121,9 @@ class RunwiseConfig:
     # Metric schema
     schema: MetricSchema = field(default_factory=MetricSchema.default)
 
+    # Anomaly detection settings
+    anomaly_config: AnomalyConfig = field(default_factory=AnomalyConfig)
+
     # Output settings
     downsample_interval: int = 1000  # For training curves
     max_validation_history: int = 10  # How many val results to show
@@ -174,6 +180,22 @@ class RunwiseConfig:
                     validation_sets=schema_data.get("validation_sets", {}),
                 )
 
+            # Load anomaly detection settings
+            if "anomaly_detection" in data:
+                ad = data["anomaly_detection"]
+                config.anomaly_config = AnomalyConfig(
+                    spike_threshold=ad.get("spike_threshold", 3.5),
+                    spike_window=ad.get("spike_window", 100),
+                    overfit_ratio_threshold=ad.get("overfit_ratio_threshold", 1.5),
+                    overfit_baseline_steps=tuple(ad.get("overfit_baseline_steps", [100, 500])),
+                    plateau_min_steps=ad.get("plateau_min_steps", 500),
+                    plateau_improvement_threshold=ad.get("plateau_improvement_threshold", 0.01),
+                    gradient_vanish_threshold=ad.get("gradient_vanish_threshold", 1e-7),
+                    gradient_explode_multiplier=ad.get("gradient_explode_multiplier", 10.0),
+                    gradient_sustained_steps=ad.get("gradient_sustained_steps", 10),
+                    throughput_drop_threshold=ad.get("throughput_drop_threshold", 0.4),
+                )
+
         # Override from environment
         if env_wandb := os.environ.get("RUNWISE_WANDB_DIR"):
             config.wandb_dir = Path(env_wandb)
@@ -218,6 +240,18 @@ class RunwiseConfig:
                     }
                     for g in self.schema.groups
                 ]
+            },
+            "anomaly_detection": {
+                "spike_threshold": self.anomaly_config.spike_threshold,
+                "spike_window": self.anomaly_config.spike_window,
+                "overfit_ratio_threshold": self.anomaly_config.overfit_ratio_threshold,
+                "overfit_baseline_steps": list(self.anomaly_config.overfit_baseline_steps),
+                "plateau_min_steps": self.anomaly_config.plateau_min_steps,
+                "plateau_improvement_threshold": self.anomaly_config.plateau_improvement_threshold,
+                "gradient_vanish_threshold": self.anomaly_config.gradient_vanish_threshold,
+                "gradient_explode_multiplier": self.anomaly_config.gradient_explode_multiplier,
+                "gradient_sustained_steps": self.anomaly_config.gradient_sustained_steps,
+                "throughput_drop_threshold": self.anomaly_config.throughput_drop_threshold,
             }
         }
         with open(path, "w") as f:

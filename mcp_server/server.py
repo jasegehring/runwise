@@ -415,7 +415,11 @@ class MCPServer:
                     if not history:
                         result = "No history data for anomaly detection"
                     else:
-                        anomalies = detect_anomalies(history, loss_key=loss_key)
+                        anomalies = detect_anomalies(
+                            history,
+                            config=self.analyzer.config.anomaly_config,
+                            loss_key=loss_key
+                        )
                         if anomalies:
                             result = format_anomalies(anomalies, compact=True)
                         else:

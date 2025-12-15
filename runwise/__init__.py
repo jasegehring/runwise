@@ -5,7 +5,7 @@ Parses W&B and local logs, generates condensed summaries optimized for LLM conte
 Includes sparkline visualizations and anomaly detection.
 """
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 from .anomalies import Anomaly, AnomalyConfig, detect_anomalies, format_anomalies
 from .config import MetricSchema, RunwiseConfig

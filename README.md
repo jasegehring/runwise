@@ -165,8 +165,6 @@ Create a `runwise.json` in your project root:
         "step_key": "_step",
         "primary_metric": "train/accuracy",
         "primary_metric_name": "Accuracy",
-        "per_step_pattern": "train/loss_step_{i}",
-        "num_steps": 8,
         "validation_sets": {
             "val": "Validation",
             "test": "Test"
@@ -181,6 +179,47 @@ Create a `runwise.json` in your project root:
                 }
             }
         ]
+    },
+    "anomaly_detection": {
+        "spike_threshold": 3.5,
+        "overfit_ratio_threshold": 1.5,
+        "plateau_improvement_threshold": 0.01
+    }
+}
+```
+
+### Anomaly Detection Thresholds
+
+Customize anomaly sensitivity for your domain:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `spike_threshold` | 3.5 | MAD score threshold for spike detection (lower = more sensitive) |
+| `spike_window` | 100 | Rolling window size for spike detection |
+| `overfit_ratio_threshold` | 1.5 | Val/train ratio increase to flag overfitting (1.5 = 50% increase) |
+| `overfit_baseline_steps` | [100, 500] | Step range for calculating baseline ratio |
+| `plateau_min_steps` | 500 | Minimum steps before checking for plateau |
+| `plateau_improvement_threshold` | 0.01 | Required improvement (0.01 = 1%) |
+| `gradient_vanish_threshold` | 1e-7 | Gradient norm below this = vanishing |
+| `gradient_explode_multiplier` | 10.0 | Gradient above 10x mean = exploding |
+| `throughput_drop_threshold` | 0.4 | Throughput drop of 40% = system issue |
+
+**Example: RL training (expect more variance)**
+```json
+{
+    "anomaly_detection": {
+        "spike_threshold": 5.0,
+        "plateau_improvement_threshold": 0.005
+    }
+}
+```
+
+**Example: Fine-tuning (strict monitoring)**
+```json
+{
+    "anomaly_detection": {
+        "spike_threshold": 2.0,
+        "overfit_ratio_threshold": 1.2
     }
 }
 ```
