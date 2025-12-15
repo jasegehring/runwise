@@ -1,31 +1,26 @@
 """Tests for runwise.cli module."""
 
-import json
 import sys
-from io import StringIO
-from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import patch
 
 from runwise.cli import (
-    cmd_list,
-    cmd_latest,
-    cmd_run,
+    _get_default_metric_keys,
+    cmd_best,
     cmd_compare,
     cmd_config,
-    cmd_notes,
-    cmd_best,
     cmd_history,
-    cmd_stats,
     cmd_keys,
+    cmd_latest,
+    cmd_list,
     cmd_live,
     cmd_local,
-    _get_default_metric_keys,
+    cmd_notes,
+    cmd_run,
+    cmd_stats,
     main,
 )
-from runwise.core import RunAnalyzer
 from runwise.config import RunwiseConfig
+from runwise.core import RunAnalyzer
 
 
 class MockArgs:

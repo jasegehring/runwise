@@ -15,14 +15,18 @@
 ```
 runwise/
 ├── runwise/              # Main package
-│   ├── __init__.py       # Exports: RunAnalyzer, RunwiseConfig, MetricSchema
+│   ├── __init__.py       # Exports: RunAnalyzer, RunwiseConfig, MetricSchema, sparklines, anomalies
 │   ├── cli.py            # CLI entry point (runwise command)
 │   ├── config.py         # Configuration and metric schema definitions
 │   ├── core.py           # RunAnalyzer - main analysis logic
+│   ├── sparklines.py     # Sparkline generation for trend visualization
+│   ├── anomalies.py      # Anomaly detection (spikes, overfitting, plateaus)
+│   ├── tensorboard.py    # Optional TensorBoard support (requires tensorboard package)
 │   ├── formatters/       # Output formatters (placeholder for expansion)
 │   └── parsers/          # Log parsers (placeholder for expansion)
 ├── mcp_server/
 │   └── server.py         # MCP server for Claude Code integration
+├── tests/                # pytest tests (94 tests)
 ├── examples/
 │   └── peptrm_config.json # Example configuration
 ├── pyproject.toml        # Package configuration
@@ -38,11 +42,33 @@ The main class providing all analysis functionality:
 - `list_runs(limit)` - Enumerate W&B runs from local directory
 - `get_latest_run()` - Get the most recent/active run
 - `find_run(run_id)` - Find specific run by ID
-- `summarize_run(run)` - Generate token-efficient summary (includes run context if available)
+- `summarize_run(run, include_anomalies, include_sparklines)` - Generate token-efficient summary with optional anomaly detection and sparklines
 - `compare_runs(run_a, run_b)` - Side-by-side metric comparison
 - `get_run_context(run)` - Get full run context (name, notes, tags, group)
+- `get_history_data(run, keys, samples)` - Get history as list of dicts (for anomaly detection/sparklines)
 - `get_live_status()` - Parse output.log for live training status
 - Local log methods for JSONL files
+
+### Sparklines (sparklines.py)
+Token-efficient trend visualization using Unicode block characters:
+- `sparkline(values, width)` - Convert values to sparkline string (e.g., "▁▂▄▆█")
+- `sparkline_with_stats(values, width)` - Sparkline with first/last values
+- `trend_indicator(values)` - Simple trend arrow (↑/↓/→/~)
+- `format_metric_with_spark(name, values)` - Full metric line with sparkline
+
+### Anomaly Detection (anomalies.py)
+Lightweight, deterministic heuristics for detecting training issues:
+- `detect_anomalies(history, config)` - Returns list of Anomaly objects (empty if healthy)
+- `format_anomalies(anomalies)` - Format for output (zero tokens if no anomalies)
+- Detection types: loss spikes (MAD-based), overfitting (val/train ratio), plateaus, gradient issues, NaN/Inf, throughput drops
+- `AnomalyConfig` - Configurable thresholds for all detectors
+
+### TensorBoard Support (tensorboard.py)
+Optional TensorBoard event file parsing (requires `pip install tensorboard`):
+- `TensorBoardParser(log_dir)` - Parse tfevents files
+- `list_runs()` - List available TB runs
+- `summarize_run(run)` - Generate summary with sparklines and anomaly detection
+- Import with: `from runwise.tensorboard import TensorBoardParser, TENSORBOARD_AVAILABLE`
 
 ### RunwiseConfig (config.py)
 Configuration with auto-detection:
@@ -61,9 +87,12 @@ Defines how to interpret project-specific metrics:
 ## CLI Commands
 
 ```bash
-runwise list                          # List recent runs
-runwise latest                        # Summarize latest run
+runwise list                          # List runs with sparkline trends
+runwise list --no-spark               # List without sparklines (faster)
+runwise latest                        # Summarize with anomaly detection + sparklines
+runwise latest --no-anomalies         # Disable anomaly detection
 runwise run <ID>                      # Summarize specific run
+runwise run <ID> --no-spark           # Without sparklines
 runwise compare <A> <B>               # Compare two runs
 runwise compare <A> <B> -f val        # Compare only validation metrics
 runwise compare <A> <B> -d            # Include config differences
@@ -75,6 +104,8 @@ runwise stats -k loss,val_loss        # Specify keys explicitly
 runwise keys [ID]                     # List available metric keys
 runwise live                          # Show live training status (includes run ID)
 runwise local [file]                  # List/analyze local logs
+runwise tb                            # List TensorBoard runs (requires tensorboard)
+runwise tb -r <run_id>                # Summarize specific TensorBoard run
 runwise init [--name]                 # Initialize runwise.json
 ```
 
@@ -96,6 +127,8 @@ Output is designed to minimize tokens:
 - Percentage formatting for 0-1 values
 - Internal metrics (keys starting with `_`) filtered out
 - CSV-style output for history data
+- **Sparklines**: Convey trend in ~10 tokens vs 50+ for raw numbers (e.g., "▁▂▄▆█")
+- **Zero-token anomalies**: Anomaly detection returns empty string for healthy runs
 
 ### Downsampling for Large Files
 The `get_history()` method handles arbitrarily large files efficiently:
@@ -108,23 +141,28 @@ A 10GB history file with 10 million steps produces the same ~3000 token output a
 
 ## Areas for Future Development
 
-### High Priority (Spec Alignment)
-1. ~~**Server-side downsampling**~~ - DONE: Implemented local downsampling in `get_history()`
-2. ~~**CSV output mode**~~ - DONE: `history` command outputs CSV
-3. ~~**Available keys hint**~~ - DONE: `list_available_keys()` and shown when keys not found
-4. **Optional W&B API support** - For remote run access (not just local files)
+### Completed
+- ~~**Server-side downsampling**~~ - DONE: Implemented local downsampling in `get_history()`
+- ~~**CSV output mode**~~ - DONE: `history` command outputs CSV
+- ~~**Available keys hint**~~ - DONE: `list_available_keys()` and shown when keys not found
+- ~~**Unit tests**~~ - DONE: 94 tests with pytest
+- ~~**Anomaly detection**~~ - DONE: Spikes (MAD-based), overfitting, plateaus, gradient issues, NaN/Inf
+- ~~**TensorBoard support**~~ - DONE: Optional, requires `pip install tensorboard`
+- ~~**Sparkline visualizations**~~ - DONE: Unicode block characters for trend display
 
-### Medium Priority (Roadmap v0.1.x)
-1. Add unit tests (pytest)
+### High Priority
+1. **Optional W&B API support** - For remote run access (not just local files)
 2. Improve error handling with user-friendly messages
-3. Auto-detect common metric patterns
-4. Add `--verbose` and `--quiet` flags
-5. Schema auto-generation from W&B run
 
-### Lower Priority (Roadmap v0.2+)
-1. Anomaly detection (plateaus, divergence, overfitting)
-2. TensorBoard/MLflow support
-3. ASCII charts for training curves
+### Medium Priority
+1. Auto-detect common metric patterns
+2. Add `--verbose` and `--quiet` flags
+3. Schema auto-generation from W&B run
+4. MLflow support
+
+### Lower Priority
+1. ASCII charts for training curves (beyond sparklines)
+2. GitHub Action for PR comments
 
 ## Run Context (Names, Notes, Tags)
 
@@ -155,13 +193,15 @@ wandb.run.notes = "Updated: found better results with warmup"
 ## MCP Server
 
 The MCP server (`mcp_server/server.py`) exposes these tools:
-- `list_runs` - List recent training runs (shows names/tags if available)
-- `analyze_run` - Detailed analysis of specific run (includes run context)
+- `list_runs` - List recent training runs with sparkline trends
+- `analyze_run` - Detailed analysis with anomaly detection + sparklines
 - `analyze_latest` - Analyze latest/active run
 - `compare_runs` - Compare two runs
 - `get_run_context` - Get run context (name, notes, tags, group)
 - `live_status` - Live training status
 - `analyze_local_log` - Analyze local log file
+- `detect_anomalies` - Run anomaly detection (returns empty if healthy)
+- `get_sparkline` - Get sparkline visualization for specific metrics
 
 Configure in Claude Code settings:
 ```json
@@ -181,11 +221,20 @@ Configure in Claude Code settings:
 
 ## Testing
 
-Currently no tests. When adding tests:
-- Use pytest
-- Mock W&B directory structure with sample data
-- Test metric parsing, formatting, schema loading
-- Test CLI commands
+Run tests with pytest:
+```bash
+pytest tests/ -v           # Full test suite (94 tests)
+pytest tests/ -q           # Quick summary
+pytest tests/test_sparklines.py  # Just sparkline tests
+pytest tests/test_anomalies.py   # Just anomaly detection tests
+```
+
+Test coverage:
+- `test_core.py` - RunAnalyzer functionality
+- `test_config.py` - Configuration and schema loading
+- `test_cli.py` - CLI command parsing
+- `test_sparklines.py` - Sparkline generation
+- `test_anomalies.py` - Anomaly detection heuristics
 
 ## Publishing Checklist
 
@@ -194,9 +243,12 @@ Before PyPI release:
 - [x] Add LICENSE file
 - [x] Verify all imports work after pip install
 - [x] Test CLI entry point
-- [x] Add unit tests (54 tests)
+- [x] Add unit tests (94 tests)
 - [x] Add py.typed marker for type hints
 - [x] Add GitHub Actions CI/CD
+- [x] Sparklines for trend visualization
+- [x] Anomaly detection (spikes, overfitting, plateaus)
+- [x] Optional TensorBoard support
 
 Build and publish:
 ```bash
@@ -226,18 +278,18 @@ twine upload dist/*
 
 | File | Purpose |
 |------|---------|
-| `runwise/core.py:23` | RunInfo dataclass (includes name, notes, tags, group) |
+| `runwise/core.py:24` | RunInfo dataclass (includes name, notes, tags, group) |
 | `runwise/core.py:49` | RunAnalyzer class |
 | `runwise/core.py:68` | list_runs() |
-| `runwise/core.py:253` | summarize_run() (includes run context) |
-| `runwise/core.py:410` | get_run_context() - full run context |
-| `runwise/core.py:485` | compare_runs() |
-| `runwise/core.py:526` | get_history() - downsampled history |
-| `runwise/core.py:554` | _downsample_jsonl() - efficient sampling |
-| `runwise/core.py:694` | get_history_stats() - stats only |
-| `runwise/core.py:758` | list_available_keys() |
+| `runwise/core.py:253` | summarize_run() (with anomaly detection + sparklines) |
+| `runwise/core.py:630` | get_history_data() - history as list of dicts |
+| `runwise/core.py:694` | get_history() - downsampled history as CSV |
+| `runwise/sparklines.py:28` | sparkline() - value-to-sparkline conversion |
+| `runwise/sparklines.py:77` | trend_indicator() - simple trend arrows |
+| `runwise/anomalies.py:42` | detect_anomalies() - main detection function |
+| `runwise/anomalies.py:245` | format_anomalies() - output formatting |
+| `runwise/tensorboard.py:47` | TensorBoardParser class |
 | `runwise/config.py:23` | MetricSchema |
 | `runwise/config.py:101` | RunwiseConfig |
-| `runwise/cli.py:81` | cmd_notes() - CLI notes command |
-| `runwise/cli.py:199` | CLI main() |
+| `runwise/cli.py:316` | CLI main() |
 | `mcp_server/server.py:32` | MCPServer class |

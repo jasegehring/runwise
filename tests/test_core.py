@@ -1,10 +1,9 @@
 """Tests for runwise.core module."""
 
-import pytest
 from pathlib import Path
 
-from runwise.core import RunAnalyzer, RunInfo
 from runwise.config import RunwiseConfig
+from runwise.core import RunAnalyzer, RunInfo
 
 
 class TestRunInfo:

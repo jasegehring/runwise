@@ -3,8 +3,9 @@
 Command-line interface for Runwise.
 
 Usage:
-    runwise list                        # List recent runs (with state)
-    runwise latest                      # Summarize latest run
+    runwise list                        # List recent runs (with sparkline trends)
+    runwise list --no-spark             # List without sparklines (faster)
+    runwise latest                      # Summarize latest run (with anomaly detection)
     runwise run <ID>                    # Summarize specific run
     runwise compare <A> <B>             # Compare two runs
     runwise config [ID]                 # Show hyperparameters/config
@@ -15,6 +16,7 @@ Usage:
     runwise keys [ID]                   # List available metric keys
     runwise live                        # Show live training status
     runwise local                       # List/analyze local logs
+    runwise tb                          # TensorBoard runs (requires tensorboard)
     runwise init                        # Initialize runwise.json config
 """
 
@@ -29,7 +31,8 @@ def cmd_list(analyzer: RunAnalyzer, args):
     """List recent runs."""
     runs = analyzer.list_runs(limit=args.limit)
     if runs:
-        print(analyzer.format_run_list(runs))
+        show_sparklines = not getattr(args, 'no_spark', False)
+        print(analyzer.format_run_list(runs, show_sparklines=show_sparklines))
     else:
         print("No runs found")
 
@@ -38,7 +41,13 @@ def cmd_latest(analyzer: RunAnalyzer, args):
     """Summarize latest run."""
     run = analyzer.get_latest_run()
     if run:
-        print(analyzer.summarize_run(run))
+        include_anomalies = not getattr(args, 'no_anomalies', False)
+        include_sparklines = not getattr(args, 'no_spark', False)
+        print(analyzer.summarize_run(
+            run,
+            include_anomalies=include_anomalies,
+            include_sparklines=include_sparklines
+        ))
     else:
         print("No latest run found")
 
@@ -47,7 +56,13 @@ def cmd_run(analyzer: RunAnalyzer, args):
     """Summarize specific run."""
     run = analyzer.find_run(args.run_id)
     if run:
-        print(analyzer.summarize_run(run))
+        include_anomalies = not getattr(args, 'no_anomalies', False)
+        include_sparklines = not getattr(args, 'no_spark', False)
+        print(analyzer.summarize_run(
+            run,
+            include_anomalies=include_anomalies,
+            include_sparklines=include_sparklines
+        ))
     else:
         print(f"Run '{args.run_id}' not found")
 
@@ -261,19 +276,57 @@ def cmd_init(analyzer: RunAnalyzer, args):
     print("Edit this file to customize metrics for your project.")
 
 
+def cmd_tb(analyzer: RunAnalyzer, args):
+    """List or analyze TensorBoard runs."""
+    from .tensorboard import TENSORBOARD_AVAILABLE, TensorBoardParser
+
+    if not TENSORBOARD_AVAILABLE:
+        print("TensorBoard support requires the tensorboard package.")
+        print("Install with: pip install tensorboard")
+        return
+
+    log_dir = Path(args.log_dir) if args.log_dir else Path(".")
+    if not log_dir.exists():
+        print(f"Log directory not found: {log_dir}")
+        return
+
+    try:
+        parser = TensorBoardParser(log_dir)
+        runs = parser.list_runs()
+
+        if not runs:
+            print(f"No TensorBoard runs found in {log_dir}")
+            return
+
+        if args.run_id:
+            # Find and summarize specific run
+            run = next((r for r in runs if args.run_id in r.run_id), None)
+            if run:
+                print(parser.summarize_run(run))
+            else:
+                print(f"Run '{args.run_id}' not found")
+        else:
+            # List all runs
+            print(parser.format_run_list(runs))
+
+    except Exception as e:
+        print(f"Error reading TensorBoard logs: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Runwise: Token-efficient ML training run analysis",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  runwise list              # List recent W&B runs
-  runwise latest            # Summarize latest run
+  runwise list              # List runs with sparkline trends
+  runwise list --no-spark   # List without sparklines (faster)
+  runwise latest            # Summarize latest run with anomaly detection
   runwise run abc123        # Summarize specific run
   runwise compare abc def   # Compare two runs
   runwise live              # Show live training status
-  runwise local             # List local log files
-  runwise local train.jsonl # Analyze specific log
+  runwise tb                # List TensorBoard runs
+  runwise tb --run train_1  # Summarize specific TB run
   runwise init              # Create runwise.json config
         """
     )
@@ -281,15 +334,20 @@ Examples:
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # list
-    p_list = subparsers.add_parser("list", help="List recent runs")
+    p_list = subparsers.add_parser("list", help="List recent runs with sparkline trends")
     p_list.add_argument("-n", "--limit", type=int, default=15, help="Number of runs to show")
+    p_list.add_argument("--no-spark", action="store_true", help="Disable sparklines (faster)")
 
     # latest
-    subparsers.add_parser("latest", help="Summarize latest run")
+    p_latest = subparsers.add_parser("latest", help="Summarize latest run with anomaly detection")
+    p_latest.add_argument("--no-spark", action="store_true", help="Disable sparklines")
+    p_latest.add_argument("--no-anomalies", action="store_true", help="Disable anomaly detection")
 
     # run
     p_run = subparsers.add_parser("run", help="Summarize specific run")
     p_run.add_argument("run_id", help="Run ID to analyze")
+    p_run.add_argument("--no-spark", action="store_true", help="Disable sparklines")
+    p_run.add_argument("--no-anomalies", action="store_true", help="Disable anomaly detection")
 
     # compare
     p_compare = subparsers.add_parser("compare", help="Compare two runs")
@@ -340,6 +398,11 @@ Examples:
     p_init.add_argument("--name", help="Project name")
     p_init.add_argument("--force", action="store_true", help="Overwrite existing config")
 
+    # TensorBoard
+    p_tb = subparsers.add_parser("tb", help="List/analyze TensorBoard runs (requires tensorboard)")
+    p_tb.add_argument("--log-dir", "-d", help="TensorBoard log directory (default: current)")
+    p_tb.add_argument("--run", "-r", dest="run_id", help="Specific run to analyze")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -370,6 +433,7 @@ Examples:
         "live": cmd_live,
         "local": cmd_local,
         "init": cmd_init,
+        "tb": cmd_tb,
     }
 
     if args.command in commands:

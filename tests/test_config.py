@@ -4,9 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
-
-from runwise.config import MetricSchema, MetricGroup, RunwiseConfig
+from runwise.config import MetricGroup, MetricSchema, RunwiseConfig
 
 
 class TestMetricGroup:

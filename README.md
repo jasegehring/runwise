@@ -7,7 +7,10 @@ Runwise parses W&B and local training logs, generating condensed summaries optim
 ## Features
 
 - **Token-efficient output**: Summaries designed to fit in LLM context without wasting tokens
+- **Sparkline visualizations**: Unicode trend graphs in ~10 tokens (e.g., `loss: ▇▆▅▃▂▁ ↓`)
+- **Anomaly detection**: Automatically flags spikes, overfitting, plateaus, gradient issues
 - **W&B integration**: Parse wandb-summary.json, output.log, and run directories
+- **TensorBoard support**: Optional parsing of tfevents files
 - **Local log support**: JSONL and other common log formats
 - **Configurable schemas**: Define metrics relevant to your project
 - **MCP server**: Direct integration with Claude Code and other MCP-compatible assistants
@@ -29,14 +32,18 @@ pip install -e .
 ### CLI Usage
 
 ```bash
-# List recent runs (shows state: RUNNING/FINISHED/CRASHED)
+# List recent runs with sparkline trends
 runwise list
+runwise list --no-spark                        # Without sparklines (faster)
 
-# Analyze latest run
+# Analyze latest run (includes anomaly detection + sparklines)
 runwise latest
+runwise latest --no-anomalies                  # Skip anomaly detection
+runwise latest --no-spark                      # Skip sparklines
 
 # Analyze specific run
 runwise run abc123xyz
+runwise run abc123xyz --no-spark --no-anomalies
 
 # Compare two runs
 runwise compare run_a run_b
@@ -71,6 +78,10 @@ runwise keys abc123                            # Specific run
 
 # Live training status
 runwise live
+
+# TensorBoard support (requires: pip install tensorboard)
+runwise tb                                     # List TB runs
+runwise tb -r train_1                          # Summarize specific TB run
 
 # Analyze local log
 runwise local training.jsonl
@@ -182,25 +193,28 @@ runwise init --name "My Project"
 
 ## Example Output
 
-### Run List (with state)
+### Run List (with sparkline trends)
 ```
 RECENT RUNS (My ML Project):
 
-ID           State     Date            Steps     Accuracy
-------------------------------------------------------------
-xyz789       RUNNING   2025-12-14      5,000       82.3%
-abc123       FINISHED  2025-12-14     50,000       95.2%
-def456       CRASHED   2025-12-13      2,341       45.0%
+ID           State     Date            Steps     Accuracy        Trend
+------------------------------------------------------------------------
+xyz789       RUNNING   2025-12-14      5,000       82.3%    ▇▆▅▄▃▂▁▁↓
+abc123       FINISHED  2025-12-14     50,000       95.2%    ▇▅▃▂▁▁▁▁↓
+def456       CRASHED   2025-12-13      2,341       45.0%    ▁▁▂▅▇▇▇▇↑
 ```
 
-### Run Summary
+### Run Summary (with anomaly detection)
 ```
 === My ML Project Run Summary ===
 Run: abc123xyz | Step: 50,000 | Runtime: 12.5h
 
+ANOMALIES:
+  ! Overfitting: val/train ratio +35% vs baseline
+
 TRAINING:
-  Loss: 0.2341
-  Accuracy: 87.3%
+  Loss: 0.2341  ▇▆▅▄▃▂▂▁▁▁
+  Accuracy: 87.3%  ▁▂▃▄▅▆▇▇▇█
 
 VALIDATION:
   Validation: 85.2%
@@ -261,8 +275,9 @@ This means a 10GB log file with millions of steps produces ~3000 tokens of outpu
 ## Contributing
 
 Contributions welcome! Areas of interest:
-- Additional log format parsers (TensorBoard, MLflow, etc.)
-- More analysis heuristics (anomaly detection, trend analysis)
+- Additional log format parsers (MLflow, etc.)
+- W&B API support for remote runs
+- GitHub Action for PR comments
 - Integration with other AI assistants
 
 ## License

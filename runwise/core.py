@@ -6,6 +6,8 @@ Provides the main RunAnalyzer class that handles:
 - Local log file parsing
 - Token-efficient summary generation
 - Downsampled history retrieval (for large files)
+- Sparkline trend visualization
+- Anomaly detection
 """
 
 import json
@@ -14,7 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .anomalies import detect_anomalies, format_anomalies
 from .config import RunwiseConfig
+from .sparklines import sparkline, trend_indicator
 
 
 @dataclass
@@ -246,8 +250,13 @@ class RunAnalyzer:
 
     # ==================== Summary Generation ====================
 
-    def summarize_run(self, run: RunInfo) -> str:
-        """Generate a token-efficient summary of a run."""
+    def summarize_run(
+        self,
+        run: RunInfo,
+        include_anomalies: bool = True,
+        include_sparklines: bool = True,
+    ) -> str:
+        """Generate a token-efficient summary of a run with anomaly detection."""
         lines = []
         summary = run.metrics
         schema = self.config.schema
@@ -258,6 +267,25 @@ class RunAnalyzer:
         runtime_hrs = runtime / 3600 if runtime else 0
         lines.append(f"=== {self.config.project_name} Run Summary ===")
         lines.append(f"Run: {run.run_id} | Step: {step:,} | Runtime: {runtime_hrs:.1f}h")
+
+        # Get history for sparklines and anomaly detection
+        history = []
+        if include_anomalies or include_sparklines:
+            try:
+                history = self.get_history_data(run, samples=200)
+            except Exception:
+                pass
+
+        # Anomaly detection (show first if there are issues)
+        if include_anomalies and history:
+            anomalies = detect_anomalies(
+                history,
+                loss_key=schema.loss_key,
+                val_loss_key="val_loss",  # Common default
+            )
+            if anomalies:
+                lines.append("")
+                lines.append(format_anomalies(anomalies, compact=True))
 
         # Run context (name, notes, tags, group) - provides semantic context
         if run.name:
@@ -275,6 +303,14 @@ class RunAnalyzer:
 
         lines.append("")
 
+        # Build sparkline lookup from history
+        metric_sparklines = {}
+        if include_sparklines and history:
+            for key in set(k for record in history for k in record.keys()):
+                values = [r.get(key) for r in history if key in r]
+                if values and all(isinstance(v, (int, float)) for v in values if v is not None):
+                    metric_sparklines[key] = sparkline(values, width=10)
+
         # Metric groups
         for group in schema.groups:
             lines.append(f"{group.display_name}:")
@@ -290,7 +326,12 @@ class RunAnalyzer:
                     else:
                         formatted = f"{value:{fmt}}"
 
-                    lines.append(f"  {display}: {formatted}")
+                    # Add sparkline if available
+                    spark = metric_sparklines.get(key, "")
+                    if spark:
+                        lines.append(f"  {display}: {formatted}  {spark}")
+                    else:
+                        lines.append(f"  {display}: {formatted}")
             lines.append("")
 
         # Per-step metrics (for iterative models)
@@ -337,14 +378,18 @@ class RunAnalyzer:
 
         return "\n".join(lines)
 
-    def format_run_list(self, runs: list[RunInfo]) -> str:
-        """Format a list of runs as a compact table."""
+    def format_run_list(self, runs: list[RunInfo], show_sparklines: bool = True) -> str:
+        """Format a list of runs as a compact table with optional sparklines."""
         schema = self.config.schema
         lines = [f"RECENT RUNS ({self.config.project_name}):", ""]
 
-        # Header with state column
-        lines.append(f"{'ID':<12} {'State':<9} {'Date':<12} {'Steps':>8} {schema.primary_metric_name:>12}")
-        lines.append("-" * 60)
+        # Header with trend column
+        if show_sparklines:
+            lines.append(f"{'ID':<12} {'State':<9} {'Date':<12} {'Steps':>8} {schema.primary_metric_name:>12} {'Trend':>12}")
+            lines.append("-" * 72)
+        else:
+            lines.append(f"{'ID':<12} {'State':<9} {'Date':<12} {'Steps':>8} {schema.primary_metric_name:>12}")
+            lines.append("-" * 60)
 
         for run in runs:
             primary_val = run.metrics.get(schema.primary_metric, 0)
@@ -356,13 +401,42 @@ class RunAnalyzer:
             # Format state with visual indicator
             state_str = run.state.upper()[:8]
 
-            lines.append(
-                f"{run.run_id:<12} "
-                f"{state_str:<9} "
-                f"{run.date:<12} "
-                f"{run.final_step:>8,} "
-                f"{primary_str:>12}"
-            )
+            # Get sparkline for primary metric
+            trend_str = ""
+            if show_sparklines:
+                try:
+                    history = self.get_history_data(
+                        run,
+                        keys=[schema.primary_metric, schema.loss_key],
+                        samples=20
+                    )
+                    if history:
+                        # Use loss for trend (decreasing is good)
+                        loss_values = [r.get(schema.loss_key) for r in history if schema.loss_key in r]
+                        if loss_values:
+                            spark = sparkline(loss_values, width=8)
+                            trend = trend_indicator(loss_values)
+                            trend_str = f"{spark}{trend}"
+                except Exception:
+                    trend_str = ""
+
+            if show_sparklines:
+                lines.append(
+                    f"{run.run_id:<12} "
+                    f"{state_str:<9} "
+                    f"{run.date:<12} "
+                    f"{run.final_step:>8,} "
+                    f"{primary_str:>12} "
+                    f"{trend_str:>12}"
+                )
+            else:
+                lines.append(
+                    f"{run.run_id:<12} "
+                    f"{state_str:<9} "
+                    f"{run.date:<12} "
+                    f"{run.final_step:>8,} "
+                    f"{primary_str:>12}"
+                )
 
             # Show run context on second line if available (token-efficient)
             context_parts = []
@@ -622,6 +696,70 @@ class RunAnalyzer:
         return diff
 
     # ==================== History (Downsampled) ====================
+
+    def get_history_data(
+        self,
+        run: RunInfo,
+        keys: Optional[list[str]] = None,
+        samples: int = 100,
+    ) -> list[dict]:
+        """
+        Get downsampled history as list of dicts (for internal use).
+
+        This is used by sparklines and anomaly detection. For CLI/MCP,
+        use get_history() which returns CSV.
+
+        Args:
+            run: RunInfo object for the run
+            keys: List of metric keys to fetch (None = all keys)
+            samples: Number of data points to return
+
+        Returns:
+            List of metric dictionaries
+        """
+        history_file = run.directory / "files" / "wandb-history.jsonl"
+        if not history_file.exists():
+            return []
+
+        # First pass: count lines
+        total_lines = 0
+        with open(history_file, 'r') as f:
+            for _ in f:
+                total_lines += 1
+
+        if total_lines == 0:
+            return []
+
+        # Calculate which lines to sample
+        if total_lines <= samples:
+            sample_indices = set(range(total_lines))
+        else:
+            sample_indices = set()
+            for i in range(samples):
+                idx = int(i * (total_lines - 1) / (samples - 1))
+                sample_indices.add(idx)
+
+        # Second pass: read only sampled lines
+        records = []
+        with open(history_file, 'r') as f:
+            for line_num, line in enumerate(f):
+                if line_num not in sample_indices:
+                    continue
+                try:
+                    record = json.loads(line.strip())
+                    if keys:
+                        # Filter to requested keys plus step
+                        filtered = {"_step": record.get("_step", record.get("step", line_num))}
+                        for key in keys:
+                            if key in record:
+                                filtered[key] = record[key]
+                        records.append(filtered)
+                    else:
+                        records.append(record)
+                except json.JSONDecodeError:
+                    continue
+
+        return records
 
     def get_history(
         self,

@@ -255,6 +255,47 @@ class MCPServer:
                         },
                         "required": ["metric"]
                     }
+                },
+                {
+                    "name": "detect_anomalies",
+                    "description": "Run anomaly detection on a training run. Detects loss spikes, overfitting, plateaus, gradient issues, and NaN/Inf values. Returns empty if run is healthy (token-efficient).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "run_id": {
+                                "type": "string",
+                                "description": "Run ID (uses latest if not specified)"
+                            },
+                            "loss_key": {
+                                "type": "string",
+                                "description": "Key for loss metric (default: auto-detect)",
+                                "default": "loss"
+                            }
+                        }
+                    }
+                },
+                {
+                    "name": "get_sparkline",
+                    "description": "Get a compact sparkline visualization of a metric's trend. Uses Unicode block characters to show trend in ~10 tokens.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "run_id": {
+                                "type": "string",
+                                "description": "Run ID (uses latest if not specified)"
+                            },
+                            "keys": {
+                                "type": "string",
+                                "description": "Comma-separated metric keys to visualize (e.g., 'loss,val_loss')"
+                            },
+                            "samples": {
+                                "type": "integer",
+                                "description": "Number of data points to sample (default: 50)",
+                                "default": 50
+                            }
+                        },
+                        "required": ["keys"]
+                    }
                 }
             ]
         }
@@ -360,6 +401,53 @@ class MCPServer:
                 limit = arguments.get("limit", 10)
                 higher_is_better = arguments.get("higher_is_better", False)
                 result = self.analyzer.format_best_run(metric, limit, higher_is_better)
+
+            elif tool_name == "detect_anomalies":
+                from runwise.anomalies import detect_anomalies, format_anomalies
+
+                run_id = arguments.get("run_id")
+                run = self.analyzer.find_run(run_id) if run_id else self.analyzer.get_latest_run()
+                if not run:
+                    result = "Run not found"
+                else:
+                    loss_key = arguments.get("loss_key", self.analyzer.config.schema.loss_key)
+                    history = self.analyzer.get_history_data(run, samples=200)
+                    if not history:
+                        result = "No history data for anomaly detection"
+                    else:
+                        anomalies = detect_anomalies(history, loss_key=loss_key)
+                        if anomalies:
+                            result = format_anomalies(anomalies, compact=True)
+                        else:
+                            result = "No anomalies detected - run appears healthy"
+
+            elif tool_name == "get_sparkline":
+                from runwise.sparklines import sparkline, trend_indicator
+
+                run_id = arguments.get("run_id")
+                run = self.analyzer.find_run(run_id) if run_id else self.analyzer.get_latest_run()
+                if not run:
+                    result = "Run not found"
+                else:
+                    keys = [k.strip() for k in arguments.get("keys", "").split(",")]
+                    samples = arguments.get("samples", 50)
+                    history = self.analyzer.get_history_data(run, keys=keys, samples=samples)
+
+                    if not history:
+                        result = f"No history data for keys: {keys}"
+                    else:
+                        lines = [f"SPARKLINES: {run.run_id}"]
+                        for key in keys:
+                            values = [r.get(key) for r in history if key in r]
+                            if values:
+                                spark = sparkline(values, width=20)
+                                trend = trend_indicator(values)
+                                first = values[0] if values else 0
+                                last = values[-1] if values else 0
+                                lines.append(f"  {key}: {spark} {trend} ({first:.4g}→{last:.4g})")
+                            else:
+                                lines.append(f"  {key}: (no data)")
+                        result = "\n".join(lines)
 
             else:
                 return {"error": {"code": -32602, "message": f"Unknown tool: {tool_name}"}}
