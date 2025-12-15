@@ -28,7 +28,10 @@ runwise/
 │   └── server.py         # MCP server for Claude Code integration
 ├── tests/                # pytest tests (94 tests)
 ├── examples/
-│   └── peptrm_config.json # Example configuration
+│   ├── training_log.jsonl        # Sample JSONL training log
+│   ├── runwise_config_example.json # Example configuration
+│   ├── expected_outputs.md       # Example command outputs
+│   └── README.md                 # Examples documentation
 ├── pyproject.toml        # Package configuration
 ├── README.md             # User documentation
 ├── ROADMAP.md            # Feature roadmap
@@ -70,6 +73,24 @@ Optional TensorBoard event file parsing (requires `pip install tensorboard`):
 - `summarize_run(run)` - Generate summary with sparklines and anomaly detection
 - Import with: `from runwise.tensorboard import TensorBoardParser, TENSORBOARD_AVAILABLE`
 
+### W&B API Support (wandb_api.py)
+Optional W&B cloud API access (requires `pip install wandb`):
+- `WandbAPIClient(project, entity)` - Connect to W&B cloud
+- `list_runs(limit, filters)` - List runs from cloud
+- `get_run(run_id)` - Get specific run
+- `get_history(run_id, keys, samples)` - Get downsampled history
+- `summarize_run(run)` - Generate summary with sparklines
+- Import with: `from runwise.wandb_api import WandbAPIClient, WANDB_API_AVAILABLE`
+
+### Markdown Formatter (formatters/markdown.py)
+Convert output to GitHub-flavored markdown:
+- `MarkdownFormatter()` - Formatter instance with configurable options
+- `format_run_summary(run, text)` - Convert run summary to markdown
+- `format_run_list(text)` - Convert run list to markdown table
+- `format_comparison(text)` - Convert comparison to markdown
+- `to_markdown(text, type)` - Convenience function for auto-detection
+- CLI flag: `--format md` on list, latest, run, compare commands
+
 ### RunwiseConfig (config.py)
 Configuration with auto-detection:
 - Looks for `runwise.json` in project root
@@ -106,7 +127,11 @@ runwise live                          # Show live training status (includes run 
 runwise local [file]                  # List/analyze local logs
 runwise tb                            # List TensorBoard runs (requires tensorboard)
 runwise tb -r <run_id>                # Summarize specific TensorBoard run
+runwise api -p <project>              # List runs from W&B cloud (requires wandb)
+runwise api -p <project> -r <run_id>  # Summarize specific run from cloud
+runwise api -p <project> --state running  # Filter by state
 runwise init [--name]                 # Initialize runwise.json
+runwise <cmd> --format md             # Output as markdown (list, latest, run, compare)
 ```
 
 ## Design Decisions
@@ -249,6 +274,10 @@ Before PyPI release:
 - [x] Sparklines for trend visualization
 - [x] Anomaly detection (spikes, overfitting, plateaus)
 - [x] Optional TensorBoard support
+- [x] Optional W&B API support
+- [x] Markdown export (--format md)
+- [x] Example files in /examples
+- [x] README badges (PyPI, CI, License)
 
 Build and publish:
 ```bash
@@ -289,7 +318,9 @@ twine upload dist/*
 | `runwise/anomalies.py:42` | detect_anomalies() - main detection function |
 | `runwise/anomalies.py:245` | format_anomalies() - output formatting |
 | `runwise/tensorboard.py:47` | TensorBoardParser class |
+| `runwise/wandb_api.py:51` | WandbAPIClient class |
+| `runwise/formatters/markdown.py:26` | MarkdownFormatter class |
 | `runwise/config.py:23` | MetricSchema |
 | `runwise/config.py:101` | RunwiseConfig |
-| `runwise/cli.py:316` | CLI main() |
+| `runwise/cli.py:402` | CLI main() |
 | `mcp_server/server.py:32` | MCPServer class |

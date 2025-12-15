@@ -25,6 +25,7 @@ from pathlib import Path
 
 from .config import MetricGroup, MetricSchema, RunwiseConfig
 from .core import RunAnalyzer
+from .formatters.markdown import MarkdownFormatter, to_markdown
 
 
 def cmd_list(analyzer: RunAnalyzer, args):
@@ -32,7 +33,14 @@ def cmd_list(analyzer: RunAnalyzer, args):
     runs = analyzer.list_runs(limit=args.limit)
     if runs:
         show_sparklines = not getattr(args, 'no_spark', False)
-        print(analyzer.format_run_list(runs, show_sparklines=show_sparklines))
+        output = analyzer.format_run_list(runs, show_sparklines=show_sparklines)
+
+        # Apply format if requested
+        fmt = getattr(args, 'format', None)
+        if fmt == 'md':
+            output = to_markdown(output, "list")
+
+        print(output)
     else:
         print("No runs found")
 
@@ -43,11 +51,19 @@ def cmd_latest(analyzer: RunAnalyzer, args):
     if run:
         include_anomalies = not getattr(args, 'no_anomalies', False)
         include_sparklines = not getattr(args, 'no_spark', False)
-        print(analyzer.summarize_run(
+        output = analyzer.summarize_run(
             run,
             include_anomalies=include_anomalies,
             include_sparklines=include_sparklines
-        ))
+        )
+
+        # Apply format if requested
+        fmt = getattr(args, 'format', None)
+        if fmt == 'md':
+            formatter = MarkdownFormatter()
+            output = formatter.format_run_summary(run, output)
+
+        print(output)
     else:
         print("No latest run found")
 
@@ -58,11 +74,19 @@ def cmd_run(analyzer: RunAnalyzer, args):
     if run:
         include_anomalies = not getattr(args, 'no_anomalies', False)
         include_sparklines = not getattr(args, 'no_spark', False)
-        print(analyzer.summarize_run(
+        output = analyzer.summarize_run(
             run,
             include_anomalies=include_anomalies,
             include_sparklines=include_sparklines
-        ))
+        )
+
+        # Apply format if requested
+        fmt = getattr(args, 'format', None)
+        if fmt == 'md':
+            formatter = MarkdownFormatter()
+            output = formatter.format_run_summary(run, output)
+
+        print(output)
     else:
         print(f"Run '{args.run_id}' not found")
 
@@ -79,12 +103,20 @@ def cmd_compare(analyzer: RunAnalyzer, args):
         print(f"Run '{args.run_b}' not found")
         return
 
-    print(analyzer.compare_runs(
+    output = analyzer.compare_runs(
         run_a,
         run_b,
         filter_prefix=args.filter,
         show_config_diff=args.diff
-    ))
+    )
+
+    # Apply format if requested
+    fmt = getattr(args, 'format', None)
+    if fmt == 'md':
+        formatter = MarkdownFormatter()
+        output = formatter.format_comparison(output)
+
+    print(output)
 
 
 def cmd_config(analyzer: RunAnalyzer, args):
@@ -313,6 +345,60 @@ def cmd_tb(analyzer: RunAnalyzer, args):
         print(f"Error reading TensorBoard logs: {e}")
 
 
+def cmd_api(analyzer: RunAnalyzer, args):
+    """Access W&B runs via cloud API."""
+    from .wandb_api import WANDB_API_AVAILABLE, WandbAPIClient
+
+    if not WANDB_API_AVAILABLE:
+        print("W&B API support requires the wandb package.")
+        print("Install with: pip install wandb")
+        return
+
+    if not args.project:
+        print("Error: --project is required for API access")
+        print("Usage: runwise api --project my-project [--entity my-team]")
+        return
+
+    try:
+        client = WandbAPIClient(project=args.project, entity=args.entity)
+
+        if args.run_id:
+            # Summarize specific run
+            run = client.get_run(args.run_id)
+            if run:
+                print(client.summarize_run(run))
+            else:
+                print(f"Run '{args.run_id}' not found")
+        elif args.compare:
+            # Compare two runs
+            run_ids = args.compare.split(",")
+            if len(run_ids) != 2:
+                print("Error: --compare requires two run IDs separated by comma")
+                return
+            run_a = client.get_run(run_ids[0].strip())
+            run_b = client.get_run(run_ids[1].strip())
+            if not run_a:
+                print(f"Run '{run_ids[0]}' not found")
+                return
+            if not run_b:
+                print(f"Run '{run_ids[1]}' not found")
+                return
+            print(client.compare_runs(run_a, run_b))
+        else:
+            # List runs
+            filters = None
+            if args.state:
+                filters = {"state": args.state}
+            runs = client.list_runs(limit=args.limit, filters=filters)
+            if runs:
+                print(client.format_run_list(runs))
+            else:
+                print("No runs found")
+
+    except Exception as e:
+        print(f"Error accessing W&B API: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Runwise: Token-efficient ML training run analysis",
@@ -337,17 +423,23 @@ Examples:
     p_list = subparsers.add_parser("list", help="List recent runs with sparkline trends")
     p_list.add_argument("-n", "--limit", type=int, default=15, help="Number of runs to show")
     p_list.add_argument("--no-spark", action="store_true", help="Disable sparklines (faster)")
+    p_list.add_argument("--format", choices=["text", "md"], default="text",
+                        help="Output format (default: text, md for Markdown)")
 
     # latest
     p_latest = subparsers.add_parser("latest", help="Summarize latest run with anomaly detection")
     p_latest.add_argument("--no-spark", action="store_true", help="Disable sparklines")
     p_latest.add_argument("--no-anomalies", action="store_true", help="Disable anomaly detection")
+    p_latest.add_argument("--format", choices=["text", "md"], default="text",
+                          help="Output format (default: text, md for Markdown)")
 
     # run
     p_run = subparsers.add_parser("run", help="Summarize specific run")
     p_run.add_argument("run_id", help="Run ID to analyze")
     p_run.add_argument("--no-spark", action="store_true", help="Disable sparklines")
     p_run.add_argument("--no-anomalies", action="store_true", help="Disable anomaly detection")
+    p_run.add_argument("--format", choices=["text", "md"], default="text",
+                       help="Output format (default: text, md for Markdown)")
 
     # compare
     p_compare = subparsers.add_parser("compare", help="Compare two runs")
@@ -355,6 +447,8 @@ Examples:
     p_compare.add_argument("run_b", help="Second run ID")
     p_compare.add_argument("-f", "--filter", help="Filter metrics by prefix (e.g., 'val', 'train')")
     p_compare.add_argument("-d", "--diff", action="store_true", help="Show config differences")
+    p_compare.add_argument("--format", choices=["text", "md"], default="text",
+                           help="Output format (default: text, md for Markdown)")
 
     # config
     p_config = subparsers.add_parser("config", help="Show hyperparameters/config for a run")
@@ -403,6 +497,15 @@ Examples:
     p_tb.add_argument("--log-dir", "-d", help="TensorBoard log directory (default: current)")
     p_tb.add_argument("--run", "-r", dest="run_id", help="Specific run to analyze")
 
+    # W&B API
+    p_api = subparsers.add_parser("api", help="Access W&B runs via cloud API (requires wandb)")
+    p_api.add_argument("--project", "-p", help="W&B project name (required)")
+    p_api.add_argument("--entity", "-e", help="W&B entity (username or team)")
+    p_api.add_argument("--run", "-r", dest="run_id", help="Specific run to analyze")
+    p_api.add_argument("--compare", "-c", help="Compare two runs (comma-separated IDs)")
+    p_api.add_argument("--state", "-s", help="Filter by state (running, finished, crashed)")
+    p_api.add_argument("-n", "--limit", type=int, default=15, help="Number of runs to show")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -434,6 +537,7 @@ Examples:
         "local": cmd_local,
         "init": cmd_init,
         "tb": cmd_tb,
+        "api": cmd_api,
     }
 
     if args.command in commands:

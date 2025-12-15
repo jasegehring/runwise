@@ -1,5 +1,10 @@
 # Runwise
 
+[![PyPI version](https://badge.fury.io/py/runwise.svg)](https://badge.fury.io/py/runwise)
+[![CI](https://github.com/jasegehring/runwise/actions/workflows/ci.yml/badge.svg)](https://github.com/jasegehring/runwise/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+
 **Token-efficient ML training run analysis for AI agents.**
 
 Runwise parses W&B and local training logs, generating condensed summaries optimized for LLM context windows. Designed for collaborative debugging between humans and AI assistants.
@@ -9,9 +14,11 @@ Runwise parses W&B and local training logs, generating condensed summaries optim
 - **Token-efficient output**: Summaries designed to fit in LLM context without wasting tokens
 - **Sparkline visualizations**: Unicode trend graphs in ~10 tokens (e.g., `loss: ▇▆▅▃▂▁ ↓`)
 - **Anomaly detection**: Automatically flags spikes, overfitting, plateaus, gradient issues
-- **W&B integration**: Parse wandb-summary.json, output.log, and run directories
-- **TensorBoard support**: Optional parsing of tfevents files
+- **W&B integration**: Parse local wandb directories or use cloud API
+- **W&B API support**: Access remote runs without local sync (requires `wandb` package)
+- **TensorBoard support**: Optional parsing of tfevents files (requires `tensorboard` package)
 - **Local log support**: JSONL and other common log formats
+- **Markdown export**: `--format md` flag for GitHub issues, Notion, and documentation
 - **Configurable schemas**: Define metrics relevant to your project
 - **MCP server**: Direct integration with Claude Code and other MCP-compatible assistants
 - **CLI tool**: Quick analysis from the command line
@@ -82,6 +89,16 @@ runwise live
 # TensorBoard support (requires: pip install tensorboard)
 runwise tb                                     # List TB runs
 runwise tb -r train_1                          # Summarize specific TB run
+
+# W&B API support (requires: pip install wandb)
+runwise api --project my-project               # List runs from W&B cloud
+runwise api -p my-project -e my-team -r abc123 # Summarize specific run
+runwise api -p my-project --state running      # Filter by state
+
+# Markdown output (for GitHub issues, Notion, etc.)
+runwise latest --format md                     # Markdown summary
+runwise list --format md                       # Markdown table
+runwise compare run_a run_b --format md        # Markdown comparison
 
 # Analyze local log
 runwise local training.jsonl
