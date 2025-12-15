@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "runwise"
-version = "0.2.0"
+version = "0.2.1"
 description = "Token-efficient ML training run analysis for AI agents"
 readme = "README.md"
 license = "MIT"
@@ -53,6 +53,9 @@ Issues = "https://github.com/jasegehring/runwise/issues"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["runwise*", "mcp_server*"]
+
+[tool.setuptools.package-data]
+runwise = ["py.typed"]
 
 [tool.black]
 line-length = 100

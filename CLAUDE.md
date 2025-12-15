@@ -194,8 +194,9 @@ Before PyPI release:
 - [x] Add LICENSE file
 - [x] Verify all imports work after pip install
 - [x] Test CLI entry point
-- [ ] Add unit tests
-- [ ] Consider adding py.typed marker
+- [x] Add unit tests (54 tests)
+- [x] Add py.typed marker for type hints
+- [x] Add GitHub Actions CI/CD
 
 Build and publish:
 ```bash
