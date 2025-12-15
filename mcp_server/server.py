@@ -26,7 +26,7 @@ from pathlib import Path
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from runwise import RunAnalyzer, RunwiseConfig
+from runwise import RunAnalyzer, RunwiseConfig, __version__
 
 
 class MCPServer:
@@ -38,16 +38,16 @@ class MCPServer:
         self.analyzer = RunAnalyzer(config)
 
     def handle_request(self, request: dict) -> dict:
-        """Handle an MCP request."""
+        """Handle an MCP request. Returns the result to be wrapped in JSON-RPC format."""
         method = request.get("method", "")
         params = request.get("params", {})
 
         if method == "initialize":
-            return self._initialize(params)
+            return {"result": self._initialize(params)}
         elif method == "tools/list":
-            return self._list_tools()
+            return {"result": self._list_tools()}
         elif method == "tools/call":
-            return self._call_tool(params)
+            return {"result": self._call_tool(params)}
         else:
             return {"error": {"code": -32601, "message": f"Method not found: {method}"}}
 
@@ -60,17 +60,32 @@ class MCPServer:
             },
             "serverInfo": {
                 "name": "runwise",
-                "version": "0.1.0"
+                "version": __version__
             }
         }
 
     def _list_tools(self) -> dict:
-        """List available tools."""
+        """List available tools with improved descriptions."""
         return {
             "tools": [
+                # Quick health check - most common use case
+                {
+                    "name": "health_check",
+                    "description": "Quick training health check - the 'how's training going?' tool. Combines run status, key metrics, sparklines, and anomaly detection in one call. START HERE for most queries.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "run_id": {
+                                "type": "string",
+                                "description": "Run ID (uses latest/active run if not specified)"
+                            }
+                        }
+                    }
+                },
+                # Discovery tools - use these first
                 {
                     "name": "list_runs",
-                    "description": "List recent W&B training runs with basic metrics",
+                    "description": "List recent W&B training runs. Shows run IDs, names, state, and key metrics.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -83,14 +98,32 @@ class MCPServer:
                     }
                 },
                 {
+                    "name": "list_keys",
+                    "description": "IMPORTANT: Call this FIRST before get_history or get_sparkline to discover available metric keys. Lists all metrics logged in a run's history.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "run_id": {
+                                "type": "string",
+                                "description": "Run ID (uses latest if not specified)"
+                            }
+                        }
+                    }
+                },
+                # Analysis tools
+                {
                     "name": "analyze_run",
-                    "description": "Get detailed analysis of a specific training run",
+                    "description": "Detailed analysis of a specific run with metrics, sparklines, and anomaly detection.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "run_id": {
                                 "type": "string",
                                 "description": "W&B run ID to analyze"
+                            },
+                            "keys": {
+                                "type": "string",
+                                "description": "Comma-separated metric keys to show (optional, uses schema if not specified)"
                             }
                         },
                         "required": ["run_id"]
@@ -98,33 +131,42 @@ class MCPServer:
                 },
                 {
                     "name": "analyze_latest",
-                    "description": "Get detailed analysis of the latest/active training run",
+                    "description": "Analyze the latest/active training run. Same as analyze_run but auto-selects most recent run.",
                     "inputSchema": {
                         "type": "object",
-                        "properties": {}
+                        "properties": {
+                            "keys": {
+                                "type": "string",
+                                "description": "Comma-separated metric keys to show (optional)"
+                            }
+                        }
                     }
                 },
                 {
                     "name": "compare_runs",
-                    "description": "Compare metrics between two training runs",
+                    "description": "Compare metrics between two runs. Supports @step syntax for step-matched comparison (e.g., 'run1@50000' to compare at specific steps). Essential for curriculum learning.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "run_a": {
                                 "type": "string",
-                                "description": "First run ID"
+                                "description": "First run ID (supports @step syntax, e.g., 'abc123@50000')"
                             },
                             "run_b": {
                                 "type": "string",
-                                "description": "Second run ID"
+                                "description": "Second run ID (supports @step syntax)"
                             },
                             "filter": {
                                 "type": "string",
                                 "description": "Filter metrics by prefix (e.g., 'val', 'train')"
                             },
+                            "threshold": {
+                                "type": "number",
+                                "description": "Only show metrics with delta > threshold % (e.g., 5 for 5%)"
+                            },
                             "show_config_diff": {
                                 "type": "boolean",
-                                "description": "Include config differences in output",
+                                "description": "Include hyperparameter differences",
                                 "default": False
                             }
                         },
@@ -133,28 +175,16 @@ class MCPServer:
                 },
                 {
                     "name": "live_status",
-                    "description": "Get live status of currently running training",
+                    "description": "Get live status of currently running training from output.log. Shows recent metrics and throughput.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {}
                     }
                 },
-                {
-                    "name": "analyze_local_log",
-                    "description": "Analyze a local training log file (JSONL format)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "file": {
-                                "type": "string",
-                                "description": "Log file name or path (optional, uses latest if not specified)"
-                            }
-                        }
-                    }
-                },
+                # History tools - call list_keys first!
                 {
                     "name": "get_history",
-                    "description": "Get downsampled training history as CSV. Efficiently handles million-step runs by returning only N sampled points.",
+                    "description": "Get downsampled training history as CSV. Call list_keys first to discover available metrics. Efficiently handles million-step runs.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -164,11 +194,11 @@ class MCPServer:
                             },
                             "keys": {
                                 "type": "string",
-                                "description": "Comma-separated metric keys (e.g., 'loss,val_loss,grad_norm')"
+                                "description": "Comma-separated metric keys (REQUIRED - call list_keys first to discover)"
                             },
                             "samples": {
                                 "type": "integer",
-                                "description": "Number of data points to return (default: 500)",
+                                "description": "Number of data points (default: 500)",
                                 "default": 500
                             }
                         },
@@ -177,7 +207,7 @@ class MCPServer:
                 },
                 {
                     "name": "get_history_stats",
-                    "description": "Get statistical summary of training history (min/max/mean/final/NaN count). Even more token-efficient than get_history.",
+                    "description": "Get statistical summary (min/max/mean/final). More token-efficient than get_history. Call list_keys first.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -187,28 +217,39 @@ class MCPServer:
                             },
                             "keys": {
                                 "type": "string",
-                                "description": "Comma-separated metric keys"
+                                "description": "Comma-separated metric keys (REQUIRED - call list_keys first)"
                             }
                         },
                         "required": ["keys"]
                     }
                 },
                 {
-                    "name": "list_keys",
-                    "description": "List available metric keys in a run's history. Use this when you don't know what metrics are logged.",
+                    "name": "get_sparkline",
+                    "description": "Compact sparkline visualization of metric trends. Shows trend in ~10 tokens. Call list_keys first.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "run_id": {
                                 "type": "string",
                                 "description": "Run ID (uses latest if not specified)"
+                            },
+                            "keys": {
+                                "type": "string",
+                                "description": "Comma-separated metric keys (REQUIRED - call list_keys first)"
+                            },
+                            "samples": {
+                                "type": "integer",
+                                "description": "Number of data points to sample (default: 50)",
+                                "default": 50
                             }
-                        }
+                        },
+                        "required": ["keys"]
                     }
                 },
+                # Metadata tools
                 {
                     "name": "get_config",
-                    "description": "Get hyperparameters and configuration for a training run. Essential for debugging (learning rate, batch size, model architecture, etc.)",
+                    "description": "Get hyperparameters and configuration (learning rate, batch size, model architecture, etc.)",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -221,7 +262,7 @@ class MCPServer:
                 },
                 {
                     "name": "get_run_context",
-                    "description": "Get run context (name, notes, tags, group). Returns user-provided descriptions of what the run is testing, variable sweeps, hypotheses, etc. Use this to understand the intent behind a run.",
+                    "description": "Get run context (name, notes, tags, group). User-provided descriptions of what the run is testing.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -240,16 +281,16 @@ class MCPServer:
                         "properties": {
                             "metric": {
                                 "type": "string",
-                                "description": "Metric to compare (e.g., 'val_loss', 'accuracy', 'train/loss')"
+                                "description": "Metric to compare (call list_keys to discover available metrics)"
                             },
                             "limit": {
                                 "type": "integer",
-                                "description": "Number of recent runs to consider (default: 10)",
+                                "description": "Number of runs to consider (default: 10)",
                                 "default": 10
                             },
                             "higher_is_better": {
                                 "type": "boolean",
-                                "description": "If true, higher values are better (e.g., accuracy). Default: false (lower is better, e.g., loss)",
+                                "description": "True for metrics like accuracy, false for loss",
                                 "default": False
                             }
                         },
@@ -258,7 +299,7 @@ class MCPServer:
                 },
                 {
                     "name": "detect_anomalies",
-                    "description": "Run anomaly detection on a training run. Detects loss spikes, overfitting, plateaus, gradient issues, and NaN/Inf values. Returns empty if run is healthy (token-efficient).",
+                    "description": "Run anomaly detection. Detects loss spikes, overfitting, plateaus, gradient issues. Returns empty string if healthy (token-efficient).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -275,30 +316,32 @@ class MCPServer:
                     }
                 },
                 {
-                    "name": "get_sparkline",
-                    "description": "Get a compact sparkline visualization of a metric's trend. Uses Unicode block characters to show trend in ~10 tokens.",
+                    "name": "analyze_local_log",
+                    "description": "Analyze a local JSONL training log file (not W&B).",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "run_id": {
+                            "file": {
                                 "type": "string",
-                                "description": "Run ID (uses latest if not specified)"
-                            },
-                            "keys": {
-                                "type": "string",
-                                "description": "Comma-separated metric keys to visualize (e.g., 'loss,val_loss')"
-                            },
-                            "samples": {
-                                "type": "integer",
-                                "description": "Number of data points to sample (default: 50)",
-                                "default": 50
+                                "description": "Log file path (uses latest in logs/ if not specified)"
                             }
-                        },
-                        "required": ["keys"]
+                        }
                     }
                 }
             ]
         }
+
+    def _parse_run_at_step(self, run_spec: str) -> tuple:
+        """Parse run@step syntax. Returns (run_id, step) where step may be None."""
+        if "@" in run_spec:
+            parts = run_spec.rsplit("@", 1)
+            run_id = parts[0]
+            try:
+                step = int(parts[1])
+                return run_id, step
+            except ValueError:
+                return run_spec, None
+        return run_spec, None
 
     def _call_tool(self, params: dict) -> dict:
         """Execute a tool call."""
@@ -306,7 +349,65 @@ class MCPServer:
         arguments = params.get("arguments", {})
 
         try:
-            if tool_name == "list_runs":
+            # Health check - the quick "how's training going?" tool
+            if tool_name == "health_check":
+                from runwise.anomalies import detect_anomalies, format_anomalies
+                from runwise.sparklines import sparkline, trend_indicator
+
+                run_id = arguments.get("run_id")
+                run = self.analyzer.find_run(run_id) if run_id else self.analyzer.get_latest_run()
+
+                if not run:
+                    result = "No runs found. Check that you're in a project with a wandb/ directory."
+                else:
+                    lines = ["TRAINING HEALTH CHECK", "=" * 40, ""]
+
+                    # Basic info
+                    state = "RUNNING" if run.state == "running" else run.state.upper()
+                    lines.append(f"Run: {run.run_id} | State: {state}")
+                    lines.append(f"Name: {run.name or '(unnamed)'}")
+                    lines.append(f"Step: {run.final_step:,} | Runtime: {run.metrics.get('_runtime', 0)/3600:.1f}h")
+                    lines.append("")
+
+                    # Key metrics with sparklines
+                    history = self.analyzer.get_history_data(run, samples=50)
+                    if history:
+                        lines.append("KEY METRICS:")
+                        # Auto-detect common keys
+                        common_keys = ["loss", "train/loss", "val_loss", "val/loss",
+                                       "accuracy", "train/accuracy", "val/accuracy"]
+                        found_keys = []
+                        for key in common_keys:
+                            if any(key in r for r in history):
+                                found_keys.append(key)
+
+                        for key in found_keys[:5]:  # Top 5 metrics
+                            values = [r.get(key) for r in history if key in r]
+                            if values:
+                                spark = sparkline(values, width=12)
+                                trend = trend_indicator(values)
+                                first = values[0] if values else 0
+                                last = values[-1] if values else 0
+                                lines.append(f"  {key}: {spark} {trend} ({first:.4g} → {last:.4g})")
+                        lines.append("")
+
+                        # Anomaly detection
+                        anomalies = detect_anomalies(
+                            history,
+                            config=self.analyzer.config.anomaly_config,
+                            loss_key=self.analyzer.config.schema.loss_key
+                        )
+                        if anomalies:
+                            lines.append("ANOMALIES DETECTED:")
+                            lines.append(format_anomalies(anomalies, compact=True))
+                        else:
+                            lines.append("STATUS: Healthy - no anomalies detected")
+                    else:
+                        lines.append("(no history data available yet)")
+
+                    result = "\n".join(lines)
+
+            elif tool_name == "list_runs":
                 limit = arguments.get("limit", 15)
                 runs = self.analyzer.list_runs(limit=limit)
                 result = self.analyzer.format_run_list(runs) if runs else "No runs found"
@@ -314,25 +415,61 @@ class MCPServer:
             elif tool_name == "analyze_run":
                 run_id = arguments.get("run_id")
                 run = self.analyzer.find_run(run_id)
-                result = self.analyzer.summarize_run(run) if run else f"Run '{run_id}' not found"
+                if run:
+                    keys = None
+                    if arguments.get("keys"):
+                        keys = [k.strip() for k in arguments["keys"].split(",")]
+                    result = self.analyzer.summarize_run(run, keys=keys)
+                else:
+                    result = f"Run '{run_id}' not found"
 
             elif tool_name == "analyze_latest":
                 run = self.analyzer.get_latest_run()
-                result = self.analyzer.summarize_run(run) if run else "No latest run found"
+                if run:
+                    keys = None
+                    if arguments.get("keys"):
+                        keys = [k.strip() for k in arguments["keys"].split(",")]
+                    result = self.analyzer.summarize_run(run, keys=keys)
+                else:
+                    result = "No latest run found"
 
             elif tool_name == "compare_runs":
-                run_a = self.analyzer.find_run(arguments.get("run_a"))
-                run_b = self.analyzer.find_run(arguments.get("run_b"))
+                # Parse @step syntax
+                run_spec_a = arguments.get("run_a", "")
+                run_spec_b = arguments.get("run_b", "")
+                run_id_a, step_a = self._parse_run_at_step(run_spec_a)
+                run_id_b, step_b = self._parse_run_at_step(run_spec_b)
+
+                run_a = self.analyzer.find_run(run_id_a)
+                run_b = self.analyzer.find_run(run_id_b)
+
                 if not run_a:
-                    result = f"Run '{arguments.get('run_a')}' not found"
+                    result = f"Run '{run_id_a}' not found"
                 elif not run_b:
-                    result = f"Run '{arguments.get('run_b')}' not found"
+                    result = f"Run '{run_id_b}' not found"
+                elif step_a is not None or step_b is not None:
+                    # Step-matched comparison
+                    if step_a is None:
+                        step_a = run_a.final_step
+                    if step_b is None:
+                        step_b = run_b.final_step
+                    result = self.analyzer.compare_runs_at_step(
+                        run_a,
+                        run_b,
+                        step_a=step_a,
+                        step_b=step_b,
+                        filter_prefix=arguments.get("filter"),
+                        threshold=arguments.get("threshold"),
+                        show_config_diff=arguments.get("show_config_diff", False)
+                    )
                 else:
+                    # Regular comparison
                     result = self.analyzer.compare_runs(
                         run_a,
                         run_b,
                         filter_prefix=arguments.get("filter"),
-                        show_config_diff=arguments.get("show_config_diff", False)
+                        show_config_diff=arguments.get("show_config_diff", False),
+                        threshold=arguments.get("threshold"),
                     )
 
             elif tool_name == "live_status":
@@ -485,11 +622,21 @@ class MCPServer:
                     break
 
                 request = json.loads(line)
-                response = self.handle_request(request)
+                handler_response = self.handle_request(request)
 
-                # Add JSON-RPC fields
-                response["jsonrpc"] = "2.0"
-                response["id"] = request.get("id")
+                # Construct proper JSON-RPC 2.0 response
+                # The response should be: {"jsonrpc": "2.0", "id": X, "result": {...}}
+                # OR for errors: {"jsonrpc": "2.0", "id": X, "error": {...}}
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id")
+                }
+
+                # handler_response contains either {"result": ...} or {"error": ...}
+                if "error" in handler_response:
+                    response["error"] = handler_response["error"]
+                else:
+                    response["result"] = handler_response.get("result", handler_response)
 
                 sys.stdout.write(json.dumps(response) + "\n")
                 sys.stdout.flush()

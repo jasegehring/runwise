@@ -18,7 +18,7 @@ from typing import Optional
 
 from .anomalies import detect_anomalies, format_anomalies
 from .config import RunwiseConfig
-from .sparklines import sparkline, trend_indicator
+from .sparklines import calculate_slope, sparkline, trend_indicator
 
 
 @dataclass
@@ -255,8 +255,18 @@ class RunAnalyzer:
         run: RunInfo,
         include_anomalies: bool = True,
         include_sparklines: bool = True,
+        keys: Optional[list[str]] = None,
     ) -> str:
-        """Generate a token-efficient summary of a run with anomaly detection."""
+        """
+        Generate a token-efficient summary of a run with anomaly detection.
+
+        Args:
+            run: Run to summarize
+            include_anomalies: Include anomaly detection
+            include_sparklines: Include sparkline visualizations
+            keys: Optional list of specific metric keys to show. If provided,
+                  only these metrics will be displayed (bypasses schema groups).
+        """
         lines = []
         summary = run.metrics
         schema = self.config.schema
@@ -312,6 +322,42 @@ class RunAnalyzer:
                 if values and all(isinstance(v, (int, float)) for v in values if v is not None):
                     metric_sparklines[key] = sparkline(values, width=10)
 
+        # If custom keys specified, show only those metrics
+        if keys:
+            lines.append("METRICS:")
+            # Calculate dynamic width for metric names
+            max_key_len = min(40, max(len(k) for k in keys))
+            found_any = False
+            for key in keys:
+                if key in summary:
+                    found_any = True
+                    value = summary[key]
+                    # Auto-format based on value
+                    if isinstance(value, float):
+                        if value <= 1 and value >= 0:
+                            formatted = f"{value*100:.2f}%"
+                        elif abs(value) < 0.001 or abs(value) > 10000:
+                            formatted = f"{value:.2e}"
+                        else:
+                            formatted = f"{value:.4f}"
+                    else:
+                        formatted = str(value)
+
+                    spark = metric_sparklines.get(key, "")
+                    if spark:
+                        lines.append(f"  {key:<{max_key_len}}: {formatted:>12}  {spark}")
+                    else:
+                        lines.append(f"  {key:<{max_key_len}}: {formatted:>12}")
+                else:
+                    lines.append(f"  {key:<{max_key_len}}: (not found)")
+
+            if not found_any:
+                lines.append("")
+                lines.append("Tip: Use 'runwise keys' to see available metrics")
+            lines.append("")
+            return "\n".join(lines)
+
+        # Otherwise use schema-based grouping
         # Metric groups
         for group in schema.groups:
             lines.append(f"{group.display_name}:")
@@ -595,7 +641,9 @@ class RunAnalyzer:
         run_a: RunInfo,
         run_b: RunInfo,
         filter_prefix: str = None,
-        show_config_diff: bool = False
+        show_config_diff: bool = False,
+        threshold: float = None,
+        group_by_prefix: bool = False,
     ) -> str:
         """
         Compare two runs side-by-side.
@@ -605,6 +653,8 @@ class RunAnalyzer:
             run_b: Second run to compare
             filter_prefix: Only show metrics starting with this prefix (e.g., 'val', 'train')
             show_config_diff: Include config differences at the end
+            threshold: Only show metrics with delta > threshold % (e.g., 5 for 5%)
+            group_by_prefix: Group metrics by their prefix (e.g., train/, val/)
         """
         lines = [f"COMPARISON: {run_a.run_id} vs {run_b.run_id}", ""]
 
@@ -614,15 +664,19 @@ class RunAnalyzer:
             lines.append(f"  B: {run_b.name or '(unnamed)'}")
             lines.append("")
 
-        lines.append(f"{'Metric':<25} {'Run A':>12} {'Run B':>12} {'Delta':>10}")
-        lines.append("-" * 65)
+        # Show step counts if different (important for fair comparison)
+        step_a = run_a.final_step
+        step_b = run_b.final_step
+        if step_a != step_b:
+            lines.append(f"  NOTE: Runs at different steps (A: {step_a:,}, B: {step_b:,})")
+            lines.append("")
 
         # Collect all metrics from both runs
         all_keys = set(run_a.metrics.keys()) | set(run_b.metrics.keys())
 
-        # Filter to numeric metrics
-        matched_count = 0
-        for key in sorted(all_keys):
+        # Filter and collect metrics
+        metrics_to_show = []
+        for key in all_keys:
             val_a = run_a.metrics.get(key)
             val_b = run_b.metrics.get(key)
 
@@ -638,26 +692,56 @@ class RunAnalyzer:
                 if not key.lower().startswith(filter_prefix.lower()):
                     continue
 
-            matched_count += 1
-
-            # Format values
-            if isinstance(val_a, float) and val_a <= 1 and isinstance(val_b, float) and val_b <= 1:
-                str_a = f"{val_a*100:.1f}%"
-                str_b = f"{val_b*100:.1f}%"
-                delta = (val_b - val_a) * 100
-                delta_str = f"{delta:+.1f}%"
+            # Calculate delta percentage
+            if val_a != 0:
+                delta_pct = abs((val_b - val_a) / val_a * 100)
             else:
-                str_a = f"{val_a:.4f}"
-                str_b = f"{val_b:.4f}"
-                delta = val_b - val_a
-                delta_str = f"{delta:+.4f}"
+                delta_pct = 100 if val_b != 0 else 0
 
-            # Truncate key for display
-            display_key = key[:25] if len(key) > 25 else key
-            lines.append(f"{display_key:<25} {str_a:>12} {str_b:>12} {delta_str:>10}")
+            # Apply threshold filter if specified
+            if threshold is not None and delta_pct < threshold:
+                continue
 
-        if filter_prefix and matched_count == 0:
-            lines.append(f"(no metrics matching filter '{filter_prefix}')")
+            metrics_to_show.append((key, val_a, val_b, delta_pct))
+
+        if not metrics_to_show:
+            if filter_prefix:
+                lines.append(f"(no metrics matching filter '{filter_prefix}')")
+            elif threshold:
+                lines.append(f"(no metrics with >{threshold}% change)")
+            else:
+                lines.append("(no comparable metrics found)")
+            return "\n".join(lines)
+
+        # Calculate dynamic column width based on actual key lengths
+        max_key_len = min(45, max(len(k) for k, _, _, _ in metrics_to_show))
+        max_key_len = max(max_key_len, 6)  # Minimum width for "Metric" header
+
+        # Group by prefix if requested
+        if group_by_prefix:
+            grouped = {}
+            for key, val_a, val_b, delta_pct in metrics_to_show:
+                prefix = key.split("/")[0] if "/" in key else "(ungrouped)"
+                if prefix not in grouped:
+                    grouped[prefix] = []
+                grouped[prefix].append((key, val_a, val_b, delta_pct))
+
+            for prefix in sorted(grouped.keys()):
+                lines.append(f"\n{prefix.upper()}:")
+                lines.append(f"{'Metric':<{max_key_len}} {'Run A':>12} {'Run B':>12} {'Delta':>10}")
+                lines.append("-" * (max_key_len + 40))
+                for key, val_a, val_b, delta_pct in sorted(grouped[prefix]):
+                    self._append_comparison_line(lines, key, val_a, val_b, max_key_len)
+        else:
+            lines.append(f"{'Metric':<{max_key_len}} {'Run A':>12} {'Run B':>12} {'Delta':>10}")
+            lines.append("-" * (max_key_len + 40))
+            for key, val_a, val_b, delta_pct in sorted(metrics_to_show):
+                self._append_comparison_line(lines, key, val_a, val_b, max_key_len)
+
+        # Show summary of what was filtered
+        if threshold:
+            lines.append("")
+            lines.append(f"(showing {len(metrics_to_show)} metrics with >{threshold}% change)")
 
         # Show config diff if requested
         if show_config_diff:
@@ -665,18 +749,44 @@ class RunAnalyzer:
             if config_diff:
                 lines.append("")
                 lines.append("CONFIG DIFFERENCES:")
-                lines.append(f"{'Parameter':<25} {'Run A':>15} {'Run B':>15}")
-                lines.append("-" * 60)
+                # Dynamic width for config keys too
+                max_config_key = min(40, max(len(k) for k in config_diff.keys()))
+                lines.append(f"{'Parameter':<{max_config_key}} {'Run A':>20} {'Run B':>20}")
+                lines.append("-" * (max_config_key + 45))
                 for key, (val_a, val_b) in config_diff.items():
-                    display_key = key[:25] if len(key) > 25 else key
-                    str_a = str(val_a)[:15] if val_a is not None else "(not set)"
-                    str_b = str(val_b)[:15] if val_b is not None else "(not set)"
-                    lines.append(f"{display_key:<25} {str_a:>15} {str_b:>15}")
+                    display_key = key[:max_config_key] if len(key) > max_config_key else key
+                    str_a = str(val_a)[:20] if val_a is not None else "(not set)"
+                    str_b = str(val_b)[:20] if val_b is not None else "(not set)"
+                    lines.append(f"{display_key:<{max_config_key}} {str_a:>20} {str_b:>20}")
             else:
                 lines.append("")
                 lines.append("CONFIG DIFFERENCES: (none - configs are identical)")
 
         return "\n".join(lines)
+
+    def _append_comparison_line(
+        self,
+        lines: list[str],
+        key: str,
+        val_a: float,
+        val_b: float,
+        key_width: int
+    ) -> None:
+        """Append a formatted comparison line to the output."""
+        # Format values based on magnitude
+        if isinstance(val_a, float) and val_a <= 1 and isinstance(val_b, float) and val_b <= 1:
+            str_a = f"{val_a*100:.1f}%"
+            str_b = f"{val_b*100:.1f}%"
+            delta = (val_b - val_a) * 100
+            delta_str = f"{delta:+.1f}%"
+        else:
+            str_a = f"{val_a:.4f}"
+            str_b = f"{val_b:.4f}"
+            delta = val_b - val_a
+            delta_str = f"{delta:+.4f}"
+
+        display_key = key[:key_width] if len(key) > key_width else key
+        lines.append(f"{display_key:<{key_width}} {str_a:>12} {str_b:>12} {delta_str:>10}")
 
     def _get_config_diff(self, config_a: dict, config_b: dict) -> dict:
         """Get config parameters that differ between two runs."""
@@ -695,6 +805,176 @@ class RunAnalyzer:
                 diff[key] = (val_a, val_b)
 
         return diff
+
+    def compare_runs_at_step(
+        self,
+        run_a: RunInfo,
+        run_b: RunInfo,
+        step_a: int,
+        step_b: int,
+        keys: Optional[list[str]] = None,
+        filter_prefix: Optional[str] = None,
+        threshold: Optional[float] = None,
+        show_config_diff: bool = False,
+    ) -> str:
+        """
+        Compare two runs at specific training steps.
+
+        This is essential for curriculum learning or staged training where
+        comparing final metrics is misleading. Fetches history and finds
+        metrics at the specified steps.
+
+        Args:
+            run_a: First run to compare
+            run_b: Second run to compare
+            step_a: Step number for run A
+            step_b: Step number for run B
+            keys: Specific metric keys to compare (auto-detects if None)
+            filter_prefix: Only show metrics starting with this prefix
+            threshold: Only show metrics with delta > threshold %
+            show_config_diff: Include config differences
+        """
+        lines = [f"STEP-MATCHED COMPARISON: {run_a.run_id}@{step_a} vs {run_b.run_id}@{step_b}", ""]
+
+        # Show run names if available
+        if run_a.name or run_b.name:
+            lines.append(f"  A: {run_a.name or '(unnamed)'} @ step {step_a:,}")
+            lines.append(f"  B: {run_b.name or '(unnamed)'} @ step {step_b:,}")
+            lines.append("")
+
+        # Determine which keys to fetch
+        if keys:
+            fetch_keys = keys
+        else:
+            # Auto-detect keys from both runs
+            available_a = self._get_available_keys(run_a)
+            available_b = self._get_available_keys(run_b)
+            fetch_keys = list(available_a & available_b)
+            # Filter out internal keys
+            fetch_keys = [k for k in fetch_keys if not k.startswith("_")]
+
+        if not fetch_keys:
+            lines.append("(no common metrics found between runs)")
+            return "\n".join(lines)
+
+        # Apply prefix filter early to reduce data fetching
+        if filter_prefix:
+            fetch_keys = [k for k in fetch_keys if k.lower().startswith(filter_prefix.lower())]
+            if not fetch_keys:
+                lines.append(f"(no metrics matching filter '{filter_prefix}')")
+                return "\n".join(lines)
+
+        # Fetch history for both runs (more samples around target step)
+        history_a = self.get_history_data(run_a, keys=fetch_keys, samples=500)
+        history_b = self.get_history_data(run_b, keys=fetch_keys, samples=500)
+
+        if not history_a or not history_b:
+            lines.append("(could not fetch history for one or both runs)")
+            return "\n".join(lines)
+
+        # Find closest step in each history
+        def find_closest_record(history: list[dict], target_step: int) -> Optional[dict]:
+            """Find the record with step closest to target."""
+            if not history:
+                return None
+            closest = min(history, key=lambda r: abs(r.get("_step", 0) - target_step))
+            return closest
+
+        record_a = find_closest_record(history_a, step_a)
+        record_b = find_closest_record(history_b, step_b)
+
+        if not record_a or not record_b:
+            lines.append("(could not find records at specified steps)")
+            return "\n".join(lines)
+
+        actual_step_a = record_a.get("_step", step_a)
+        actual_step_b = record_b.get("_step", step_b)
+
+        # Show actual steps if different from requested
+        if actual_step_a != step_a or actual_step_b != step_b:
+            lines.append(f"  (actual steps: A@{actual_step_a:,}, B@{actual_step_b:,})")
+            lines.append("")
+
+        # Collect metrics to show
+        metrics_to_show = []
+        for key in fetch_keys:
+            val_a = record_a.get(key)
+            val_b = record_b.get(key)
+
+            if val_a is None or val_b is None:
+                continue
+            if not isinstance(val_a, (int, float)) or not isinstance(val_b, (int, float)):
+                continue
+
+            # Calculate delta percentage
+            if val_a != 0:
+                delta_pct = abs((val_b - val_a) / val_a * 100)
+            else:
+                delta_pct = 100 if val_b != 0 else 0
+
+            # Apply threshold filter
+            if threshold is not None and delta_pct < threshold:
+                continue
+
+            metrics_to_show.append((key, val_a, val_b, delta_pct))
+
+        if not metrics_to_show:
+            if threshold:
+                lines.append(f"(no metrics with >{threshold}% change at these steps)")
+            else:
+                lines.append("(no comparable metrics found at these steps)")
+            return "\n".join(lines)
+
+        # Calculate dynamic column width
+        max_key_len = min(45, max(len(k) for k, _, _, _ in metrics_to_show))
+        max_key_len = max(max_key_len, 6)
+
+        # Output comparison
+        lines.append(f"{'Metric':<{max_key_len}} {'Run A':>12} {'Run B':>12} {'Delta':>10}")
+        lines.append("-" * (max_key_len + 40))
+
+        for key, val_a, val_b, delta_pct in sorted(metrics_to_show):
+            self._append_comparison_line(lines, key, val_a, val_b, max_key_len)
+
+        if threshold:
+            lines.append("")
+            lines.append(f"(showing {len(metrics_to_show)} metrics with >{threshold}% change)")
+
+        # Config diff
+        if show_config_diff:
+            config_diff = self._get_config_diff(run_a.config, run_b.config)
+            if config_diff:
+                lines.append("")
+                lines.append("CONFIG DIFFERENCES:")
+                max_config_key = min(40, max(len(k) for k in config_diff.keys()))
+                lines.append(f"{'Parameter':<{max_config_key}} {'Run A':>20} {'Run B':>20}")
+                lines.append("-" * (max_config_key + 45))
+                for key, (c_val_a, c_val_b) in config_diff.items():
+                    display_key = key[:max_config_key] if len(key) > max_config_key else key
+                    str_a = str(c_val_a)[:20] if c_val_a is not None else "(not set)"
+                    str_b = str(c_val_b)[:20] if c_val_b is not None else "(not set)"
+                    lines.append(f"{display_key:<{max_config_key}} {str_a:>20} {str_b:>20}")
+
+        return "\n".join(lines)
+
+    def _get_available_keys(self, run: RunInfo) -> set[str]:
+        """Get available metric keys from a run's history."""
+        history_file = run.directory / "files" / "wandb-history.jsonl"
+        if not history_file.exists():
+            return set()
+
+        import json
+        keys = set()
+        with open(history_file, 'r') as f:
+            for i, line in enumerate(f):
+                if i >= 10:  # Check first 10 lines
+                    break
+                try:
+                    record = json.loads(line.strip())
+                    keys.update(record.keys())
+                except Exception:
+                    continue
+        return keys
 
     # ==================== History (Downsampled) ====================
 
@@ -1082,9 +1362,9 @@ class RunAnalyzer:
             ""
         ]
 
-        # Summary table
-        lines.append(f"{'Metric':<20} {'Trend':>8} {'Avg Std':>10} {'Start Std':>10} {'Final Std':>10} {'Status':>10}")
-        lines.append("-" * 75)
+        # Summary table - now includes slope
+        lines.append(f"{'Metric':<16} {'Slope/1k':>10} {'Trend':>6} {'Avg Std':>10} {'Final Std':>10} {'Status':>10}")
+        lines.append("-" * 68)
 
         detailed_data = {}
 
@@ -1092,8 +1372,11 @@ class RunAnalyzer:
             values = data.get(key, [])
 
             if len(values) < window:
-                lines.append(f"{key:<20} {'--':>8} {'--':>10} {'--':>10} {'--':>10} {'TOO SHORT':>10}")
+                lines.append(f"{key:<16} {'--':>10} {'--':>6} {'--':>10} {'--':>10} {'TOO SHORT':>10}")
                 continue
+
+            # Calculate slope using Theil-Sen estimator (robust to noise)
+            _, slope_per_1k, slope_dir = calculate_slope(values)
 
             # Calculate rolling std dev
             rolling_stds = []
@@ -1105,25 +1388,24 @@ class RunAnalyzer:
                 rolling_stds.append(std)
 
             if not rolling_stds:
-                lines.append(f"{key:<20} {'--':>8} {'--':>10} {'--':>10} {'--':>10} {'NO DATA':>10}")
+                lines.append(f"{key:<16} {'--':>10} {'--':>6} {'--':>10} {'--':>10} {'NO DATA':>10}")
                 continue
 
             # Calculate statistics
             avg_std = sum(rolling_stds) / len(rolling_stds)
-            start_std = rolling_stds[0] if rolling_stds else 0
             final_std = rolling_stds[-1] if rolling_stds else 0
 
-            # Determine trend (compare first quarter to last quarter)
+            # Determine stability trend (compare first quarter to last quarter of std dev)
             quarter = max(1, len(rolling_stds) // 4)
             first_quarter_avg = sum(rolling_stds[:quarter]) / quarter
             last_quarter_avg = sum(rolling_stds[-quarter:]) / quarter
 
             if last_quarter_avg < first_quarter_avg * 0.7:
-                trend = "↓"  # Decreasing (stabilizing)
+                stab_trend = "↓"  # Std decreasing (stabilizing)
             elif last_quarter_avg > first_quarter_avg * 1.3:
-                trend = "↑"  # Increasing (destabilizing)
+                stab_trend = "↑"  # Std increasing (destabilizing)
             else:
-                trend = "→"  # Stable
+                stab_trend = "→"  # Stable variance
 
             # Determine stability status
             # Compare final std to the metric's typical scale
@@ -1145,19 +1427,30 @@ class RunAnalyzer:
                     return f"{v:.2e}"
                 return f"{v:.4f}"
 
-            lines.append(f"{key:<20} {trend:>8} {fmt(avg_std):>10} {fmt(start_std):>10} {fmt(final_std):>10} {status:>10}")
+            # Format slope with direction indicator
+            if slope_dir == "declining":
+                slope_str = f"{slope_per_1k:+.4f}" if abs(slope_per_1k) < 1000 else f"{slope_per_1k:+.2e}"
+            elif slope_dir == "improving":
+                slope_str = f"{slope_per_1k:+.4f}" if abs(slope_per_1k) < 1000 else f"{slope_per_1k:+.2e}"
+            else:
+                slope_str = "~0"
+
+            lines.append(f"{key:<16} {slope_str:>10} {stab_trend:>6} {fmt(avg_std):>10} {fmt(final_std):>10} {status:>10}")
 
             # Store for detailed output
             detailed_data[key] = {
                 "rolling_stds": rolling_stds,
-                "trend": trend,
+                "stab_trend": stab_trend,
+                "slope_per_1k": slope_per_1k,
+                "slope_dir": slope_dir,
                 "status": status
             }
 
         # Add interpretation guide
         lines.append("")
-        lines.append("Legend: ↓=stabilizing  →=steady  ↑=destabilizing")
-        lines.append("Status: STABLE (<5% variance) | MODERATE (5-15%) | NOISY (>15%)")
+        lines.append("Slope/1k: change per 1000 steps (robust Theil-Sen estimate)")
+        lines.append("Trend: ↓=stabilizing  →=steady  ↑=destabilizing (variance trend)")
+        lines.append("Status: STABLE (<5% rel. variance) | MODERATE (5-15%) | NOISY (>15%)")
 
         return "\n".join(lines)
 

@@ -199,6 +199,7 @@ class WandbAPIClient:
         self,
         run: APIRunInfo,
         include_sparklines: bool = True,
+        keys: Optional[list[str]] = None,
     ) -> str:
         """
         Generate summary for a W&B API run.
@@ -206,6 +207,8 @@ class WandbAPIClient:
         Args:
             run: APIRunInfo object
             include_sparklines: Include sparkline visualizations
+            keys: Optional list of specific metric keys to show. If provided,
+                  only these metrics will be displayed.
         """
         from .sparklines import sparkline
 
@@ -223,22 +226,58 @@ class WandbAPIClient:
 
         lines.append("")
 
-        # Show key metrics from summary
+        # Get sparkline data if needed
+        sparklines_data = {}
+        if include_sparklines and run.summary:
+            metrics_for_spark = keys if keys else list(run.summary.keys())[:10]
+            history = self.get_history(run.run_id, metrics_for_spark, samples=20)
+            if history:
+                for key in metrics_for_spark:
+                    values = [r.get(key) for r in history if key in r]
+                    if values:
+                        sparklines_data[key] = sparkline(values, width=8)
+
+        # If custom keys specified, show only those metrics
+        if keys:
+            lines.append("METRICS:")
+            max_key_len = min(40, max(len(k) for k in keys))
+            found_any = False
+            for key in keys:
+                if key in run.summary:
+                    found_any = True
+                    value = run.summary[key]
+                    if isinstance(value, float):
+                        if value <= 1 and value >= 0:
+                            value_str = f"{value*100:.2f}%"
+                        elif abs(value) < 0.001 or abs(value) > 10000:
+                            value_str = f"{value:.2e}"
+                        else:
+                            value_str = f"{value:.4f}"
+                    else:
+                        value_str = str(value)
+
+                    spark = sparklines_data.get(key, "")
+                    if spark:
+                        lines.append(f"  {key:<{max_key_len}}: {value_str:>12}  {spark}")
+                    else:
+                        lines.append(f"  {key:<{max_key_len}}: {value_str:>12}")
+                else:
+                    lines.append(f"  {key:<{max_key_len}}: (not found)")
+
+            if not found_any:
+                lines.append("")
+                lines.append("Tip: Check available metrics with 'runwise api -p <project> -r <run_id>'")
+            return "\n".join(lines)
+
+        # Otherwise show all metrics (default behavior)
         if run.summary:
             lines.append("METRICS:")
             # Filter out internal metrics and show top metrics
             metrics = {k: v for k, v in run.summary.items()
                        if not k.startswith("_") and isinstance(v, (int, float))}
 
-            # Get history for sparklines if requested
-            sparklines_data = {}
-            if include_sparklines and metrics:
-                history = self.get_history(run.run_id, list(metrics.keys())[:10], samples=20)
-                if history:
-                    for key in metrics:
-                        values = [r.get(key) for r in history if key in r]
-                        if values:
-                            sparklines_data[key] = sparkline(values, width=8)
+            # Calculate dynamic width
+            max_key_len = min(40, max(len(k) for k in metrics.keys())) if metrics else 30
 
             for key, value in sorted(metrics.items())[:15]:
                 if isinstance(value, float):
@@ -253,9 +292,9 @@ class WandbAPIClient:
 
                 spark = sparklines_data.get(key, "")
                 if spark:
-                    lines.append(f"  {key[:30]:<30}: {value_str:>12}  {spark}")
+                    lines.append(f"  {key:<{max_key_len}}: {value_str:>12}  {spark}")
                 else:
-                    lines.append(f"  {key[:30]:<30}: {value_str:>12}")
+                    lines.append(f"  {key:<{max_key_len}}: {value_str:>12}")
 
         # Run anomaly detection
         if run.summary:
@@ -296,8 +335,26 @@ class WandbAPIClient:
 
         return "\n".join(lines)
 
-    def compare_runs(self, run_a: APIRunInfo, run_b: APIRunInfo) -> str:
-        """Compare two runs side-by-side."""
+    def compare_runs(
+        self,
+        run_a: APIRunInfo,
+        run_b: APIRunInfo,
+        filter_prefix: Optional[str] = None,
+        threshold: Optional[float] = None,
+        group_by_prefix: bool = False,
+        show_config_diff: bool = False,
+    ) -> str:
+        """
+        Compare two runs side-by-side.
+
+        Args:
+            run_a: First run to compare
+            run_b: Second run to compare
+            filter_prefix: Only show metrics starting with this prefix (e.g., 'val', 'train')
+            threshold: Only show metrics with delta > threshold % (e.g., 5 for 5%)
+            group_by_prefix: Group metrics by their prefix (e.g., train/, val/)
+            show_config_diff: Include config differences at the end
+        """
         lines = [f"COMPARISON (API): {run_a.run_id} vs {run_b.run_id}", ""]
 
         if run_a.name or run_b.name:
@@ -305,13 +362,17 @@ class WandbAPIClient:
             lines.append(f"  B: {run_b.name or '(unnamed)'}")
             lines.append("")
 
-        lines.append(f"{'Metric':<25} {'Run A':>12} {'Run B':>12} {'Delta':>10}")
-        lines.append("-" * 65)
+        # Show step counts if different (important for fair comparison)
+        if run_a.steps != run_b.steps:
+            lines.append(f"  NOTE: Runs at different steps (A: {run_a.steps:,}, B: {run_b.steps:,})")
+            lines.append("")
 
         # Collect all metrics from both runs
         all_keys = set(run_a.summary.keys()) | set(run_b.summary.keys())
 
-        for key in sorted(all_keys):
+        # Filter and collect metrics
+        metrics_to_show = []
+        for key in all_keys:
             val_a = run_a.summary.get(key)
             val_b = run_b.summary.get(key)
 
@@ -321,22 +382,119 @@ class WandbAPIClient:
             if key.startswith("_"):
                 continue
 
-            # Format values
-            if isinstance(val_a, float) and val_a <= 1 and isinstance(val_b, float) and val_b <= 1:
-                str_a = f"{val_a*100:.1f}%"
-                str_b = f"{val_b*100:.1f}%"
-                delta = (val_b - val_a) * 100
-                delta_str = f"{delta:+.1f}%"
-            else:
-                str_a = f"{val_a:.4f}"
-                str_b = f"{val_b:.4f}"
-                delta = val_b - val_a
-                delta_str = f"{delta:+.4f}"
+            # Apply filter if specified
+            if filter_prefix:
+                if not key.lower().startswith(filter_prefix.lower()):
+                    continue
 
-            display_key = key[:25]
-            lines.append(f"{display_key:<25} {str_a:>12} {str_b:>12} {delta_str:>10}")
+            # Calculate delta percentage
+            if val_a != 0:
+                delta_pct = abs((val_b - val_a) / val_a * 100)
+            else:
+                delta_pct = 100 if val_b != 0 else 0
+
+            # Apply threshold filter if specified
+            if threshold is not None and delta_pct < threshold:
+                continue
+
+            metrics_to_show.append((key, val_a, val_b, delta_pct))
+
+        if not metrics_to_show:
+            if filter_prefix:
+                lines.append(f"(no metrics matching filter '{filter_prefix}')")
+            elif threshold:
+                lines.append(f"(no metrics with >{threshold}% change)")
+            else:
+                lines.append("(no comparable metrics found)")
+            return "\n".join(lines)
+
+        # Calculate dynamic column width based on actual key lengths
+        max_key_len = min(45, max(len(k) for k, _, _, _ in metrics_to_show))
+        max_key_len = max(max_key_len, 6)  # Minimum width for "Metric" header
+
+        # Group by prefix if requested
+        if group_by_prefix:
+            grouped: dict[str, list] = {}
+            for key, val_a, val_b, delta_pct in metrics_to_show:
+                prefix = key.split("/")[0] if "/" in key else "(ungrouped)"
+                if prefix not in grouped:
+                    grouped[prefix] = []
+                grouped[prefix].append((key, val_a, val_b, delta_pct))
+
+            for prefix in sorted(grouped.keys()):
+                lines.append(f"\n{prefix.upper()}:")
+                lines.append(f"{'Metric':<{max_key_len}} {'Run A':>12} {'Run B':>12} {'Delta':>10}")
+                lines.append("-" * (max_key_len + 40))
+                for key, val_a, val_b, delta_pct in sorted(grouped[prefix]):
+                    self._append_comparison_line(lines, key, val_a, val_b, max_key_len)
+        else:
+            lines.append(f"{'Metric':<{max_key_len}} {'Run A':>12} {'Run B':>12} {'Delta':>10}")
+            lines.append("-" * (max_key_len + 40))
+            for key, val_a, val_b, delta_pct in sorted(metrics_to_show):
+                self._append_comparison_line(lines, key, val_a, val_b, max_key_len)
+
+        # Show summary of what was filtered
+        if threshold:
+            lines.append("")
+            lines.append(f"(showing {len(metrics_to_show)} metrics with >{threshold}% change)")
+
+        # Show config diff if requested
+        if show_config_diff:
+            config_diff = self._get_config_diff(run_a.config, run_b.config)
+            if config_diff:
+                lines.append("")
+                lines.append("CONFIG DIFFERENCES:")
+                max_config_key = min(40, max(len(k) for k in config_diff.keys()))
+                lines.append(f"{'Parameter':<{max_config_key}} {'Run A':>20} {'Run B':>20}")
+                lines.append("-" * (max_config_key + 45))
+                for key, (c_val_a, c_val_b) in config_diff.items():
+                    display_key = key[:max_config_key] if len(key) > max_config_key else key
+                    str_a = str(c_val_a)[:20] if c_val_a is not None else "(not set)"
+                    str_b = str(c_val_b)[:20] if c_val_b is not None else "(not set)"
+                    lines.append(f"{display_key:<{max_config_key}} {str_a:>20} {str_b:>20}")
+            else:
+                lines.append("")
+                lines.append("CONFIG DIFFERENCES: (none - configs are identical)")
 
         return "\n".join(lines)
+
+    def _append_comparison_line(
+        self,
+        lines: list[str],
+        key: str,
+        val_a: float,
+        val_b: float,
+        key_width: int
+    ) -> None:
+        """Append a formatted comparison line to the output."""
+        if isinstance(val_a, float) and val_a <= 1 and isinstance(val_b, float) and val_b <= 1:
+            str_a = f"{val_a*100:.1f}%"
+            str_b = f"{val_b*100:.1f}%"
+            delta = (val_b - val_a) * 100
+            delta_str = f"{delta:+.1f}%"
+        else:
+            str_a = f"{val_a:.4f}"
+            str_b = f"{val_b:.4f}"
+            delta = val_b - val_a
+            delta_str = f"{delta:+.4f}"
+
+        display_key = key[:key_width] if len(key) > key_width else key
+        lines.append(f"{display_key:<{key_width}} {str_a:>12} {str_b:>12} {delta_str:>10}")
+
+    def _get_config_diff(self, config_a: dict, config_b: dict) -> dict:
+        """Get config parameters that differ between two runs."""
+        diff = {}
+        all_keys = set(config_a.keys()) | set(config_b.keys())
+
+        for key in sorted(all_keys):
+            if key.startswith("_"):
+                continue
+            val_a = config_a.get(key)
+            val_b = config_b.get(key)
+            if val_a != val_b:
+                diff[key] = (val_a, val_b)
+
+        return diff
 
 
 def check_wandb_api_available() -> tuple[bool, str]:

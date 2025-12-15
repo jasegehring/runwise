@@ -37,11 +37,66 @@ COMMON WORKFLOWS:
 """
 
 import argparse
+import json
 from pathlib import Path
+from typing import Optional
 
 from .config import MetricGroup, MetricSchema, RunwiseConfig
 from .core import RunAnalyzer
 from .formatters.markdown import MarkdownFormatter, to_markdown
+
+
+def _detect_wandb_project() -> Optional[str]:
+    """
+    Auto-detect W&B project name from local wandb/ directory or config.
+
+    Checks in order:
+    1. runwise.json config file
+    2. wandb/latest-run/files/config.yaml (project field)
+    3. wandb/*/files/wandb-metadata.json (project field)
+    """
+    # Check runwise.json first
+    config_path = Path("runwise.json")
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+                if config.get("wandb_project"):
+                    return config["wandb_project"]
+        except Exception:
+            pass
+
+    # Check wandb directory
+    wandb_dir = Path("wandb")
+    if not wandb_dir.exists():
+        return None
+
+    # Try latest-run first
+    latest_link = wandb_dir / "latest-run"
+    if latest_link.exists():
+        metadata_file = latest_link / "files" / "wandb-metadata.json"
+        if metadata_file.exists():
+            try:
+                with open(metadata_file) as f:
+                    metadata = json.load(f)
+                    if metadata.get("project"):
+                        return metadata["project"]
+            except Exception:
+                pass
+
+    # Try any run directory
+    for run_dir in sorted(wandb_dir.glob("run-*"), reverse=True):
+        metadata_file = run_dir / "files" / "wandb-metadata.json"
+        if metadata_file.exists():
+            try:
+                with open(metadata_file) as f:
+                    metadata = json.load(f)
+                    if metadata.get("project"):
+                        return metadata["project"]
+            except Exception:
+                continue
+
+    return None
 
 
 def _no_wandb_runs_message(analyzer: RunAnalyzer) -> str:
@@ -107,10 +162,15 @@ def cmd_latest(analyzer: RunAnalyzer, args):
     if run:
         include_anomalies = not getattr(args, 'no_anomalies', False)
         include_sparklines = not getattr(args, 'no_spark', False)
+        # Parse custom keys if provided
+        keys = None
+        if getattr(args, 'keys', None):
+            keys = [k.strip() for k in args.keys.split(",")]
         output = analyzer.summarize_run(
             run,
             include_anomalies=include_anomalies,
-            include_sparklines=include_sparklines
+            include_sparklines=include_sparklines,
+            keys=keys,
         )
 
         # Apply format if requested
@@ -130,10 +190,15 @@ def cmd_run(analyzer: RunAnalyzer, args):
     if run:
         include_anomalies = not getattr(args, 'no_anomalies', False)
         include_sparklines = not getattr(args, 'no_spark', False)
+        # Parse custom keys if provided
+        keys = None
+        if getattr(args, 'keys', None):
+            keys = [k.strip() for k in args.keys.split(",")]
         output = analyzer.summarize_run(
             run,
             include_anomalies=include_anomalies,
-            include_sparklines=include_sparklines
+            include_sparklines=include_sparklines,
+            keys=keys,
         )
 
         # Apply format if requested
@@ -147,24 +212,62 @@ def cmd_run(analyzer: RunAnalyzer, args):
         print(_run_not_found_message(args.run_id, analyzer))
 
 
+def _parse_run_at_step(run_spec: str) -> tuple[str, int | None]:
+    """Parse run@step syntax. Returns (run_id, step) where step may be None."""
+    if "@" in run_spec:
+        parts = run_spec.rsplit("@", 1)
+        run_id = parts[0]
+        try:
+            step = int(parts[1])
+            return run_id, step
+        except ValueError:
+            return run_spec, None
+    return run_spec, None
+
+
 def cmd_compare(analyzer: RunAnalyzer, args):
-    """Compare two W&B runs."""
-    run_a = analyzer.find_run(args.run_a)
-    run_b = analyzer.find_run(args.run_b)
+    """Compare two W&B runs, optionally at specific steps."""
+    # Parse @step syntax from run IDs
+    run_id_a, step_a = _parse_run_at_step(args.run_a)
+    run_id_b, step_b = _parse_run_at_step(args.run_b)
+
+    run_a = analyzer.find_run(run_id_a)
+    run_b = analyzer.find_run(run_id_b)
 
     if not run_a:
-        print(_run_not_found_message(args.run_a, analyzer))
+        print(_run_not_found_message(run_id_a, analyzer))
         return
     if not run_b:
-        print(_run_not_found_message(args.run_b, analyzer))
+        print(_run_not_found_message(run_id_b, analyzer))
         return
 
-    output = analyzer.compare_runs(
-        run_a,
-        run_b,
-        filter_prefix=args.filter,
-        show_config_diff=args.diff
-    )
+    # Use step-matched comparison if either run has @step
+    if step_a is not None or step_b is not None:
+        # Default to final step if not specified
+        if step_a is None:
+            step_a = run_a.final_step
+        if step_b is None:
+            step_b = run_b.final_step
+
+        output = analyzer.compare_runs_at_step(
+            run_a,
+            run_b,
+            step_a=step_a,
+            step_b=step_b,
+            filter_prefix=args.filter,
+            threshold=getattr(args, 'threshold', None),
+            show_config_diff=args.diff,
+        )
+    else:
+        # Regular comparison using final summary
+        output = analyzer.compare_runs(
+            run_a,
+            run_b,
+            filter_prefix=args.filter,
+            show_config_diff=args.diff,
+            threshold=getattr(args, 'threshold', None),
+            group_by_prefix=getattr(args, 'group', False),
+        )
 
     # Apply format if requested
     fmt = getattr(args, 'format', None)
@@ -530,18 +633,100 @@ def cmd_api(analyzer: RunAnalyzer, args):
         return
 
     if not args.project:
-        print("Error: --project is required for API access")
-        print("Usage: runwise api --project my-project [--entity my-team]")
-        return
+        # Try to auto-detect project from wandb/ directory
+        project = _detect_wandb_project()
+        if project:
+            args.project = project
+            print(f"(auto-detected project: {project})")
+            print("")
+        else:
+            print("Error: --project is required for API access")
+            print("Usage: runwise api --project my-project [--entity my-team]")
+            print("")
+            print("Tip: Create a runwise.json config file to avoid specifying project each time")
+            return
 
     try:
         client = WandbAPIClient(project=args.project, entity=args.entity)
 
-        if args.run_id:
-            # Summarize specific run
+        # Handle --history mode
+        if getattr(args, 'history', False):
+            if not args.run_id:
+                print("Error: --history requires a run ID (-r)")
+                print("Usage: runwise api -p project -r run_id --history -k loss,val_loss")
+                return
+            if not args.keys:
+                print("Error: --history requires metric keys (-k)")
+                print("Usage: runwise api -p project -r run_id --history -k loss,val_loss")
+                return
+            keys = [k.strip() for k in args.keys.split(",")]
+            samples = getattr(args, 'samples', 500)
+            history = client.get_history(args.run_id, keys, samples=samples)
+            if history:
+                # Format as CSV
+                print(f"step,{','.join(keys)}")
+                for record in history:
+                    step = record.get("_step", 0)
+                    values = [str(record.get(k, "")) for k in keys]
+                    print(f"{step},{','.join(values)}")
+            else:
+                print(f"No history data found for run '{args.run_id}'")
+            return
+
+        # Handle --best mode
+        if getattr(args, 'best', None):
+            metric = args.best
+            higher_is_better = getattr(args, 'max', False)
+            filters = {"state": args.state} if args.state else None
+            runs = client.list_runs(limit=args.limit, filters=filters)
+
+            # Find best by metric
+            scored = []
+            for run in runs:
+                value = run.summary.get(metric)
+                if value is not None and isinstance(value, (int, float)):
+                    scored.append((run, value))
+
+            if not scored:
+                print(f"No runs found with metric '{metric}'")
+                return
+
+            scored.sort(key=lambda x: x[1], reverse=higher_is_better)
+            best_run, best_value = scored[0]
+
+            # Format output
+            direction = "highest" if higher_is_better else "lowest"
+            if isinstance(best_value, float) and best_value <= 1:
+                best_str = f"{best_value*100:.2f}%"
+            else:
+                best_str = f"{best_value:.6g}"
+
+            print(f"BEST RUN BY {metric} ({direction} from {len(scored)} runs):")
+            print("")
+            print(f"  BEST: {best_run.run_id} ({best_run.name or 'unnamed'}) = {best_str}")
+            print(f"  URL: {best_run.url}")
+            print("")
+            print(f"{'Rank':<6} {'Run ID':<12} {'Name':<20} {metric:>15}")
+            print("-" * 60)
+            for i, (run, value) in enumerate(scored[:10], 1):
+                if isinstance(value, float) and value <= 1:
+                    value_str = f"{value*100:.2f}%"
+                else:
+                    value_str = f"{value:.6g}"
+                name = (run.name or "(unnamed)")[:20]
+                marker = " *" if i == 1 else ""
+                print(f"{i:<6} {run.run_id:<12} {name:<20} {value_str:>15}{marker}")
+            return
+
+        if args.run_id and not getattr(args, 'history', False):
+            # Summarize specific run (unless --history is specified)
             run = client.get_run(args.run_id)
             if run:
-                print(client.summarize_run(run))
+                # Parse custom keys if provided (and not using history mode)
+                keys = None
+                if getattr(args, 'keys', None) and not getattr(args, 'history', False):
+                    keys = [k.strip() for k in args.keys.split(",")]
+                print(client.summarize_run(run, keys=keys))
             else:
                 print(f"Run '{args.run_id}' not found")
         elif args.compare:
@@ -558,7 +743,14 @@ def cmd_api(analyzer: RunAnalyzer, args):
             if not run_b:
                 print(f"Run '{run_ids[1]}' not found")
                 return
-            print(client.compare_runs(run_a, run_b))
+            print(client.compare_runs(
+                run_a,
+                run_b,
+                filter_prefix=getattr(args, 'filter', None),
+                threshold=getattr(args, 'threshold', None),
+                group_by_prefix=getattr(args, 'group', False),
+                show_config_diff=getattr(args, 'diff', False),
+            ))
         else:
             # List runs
             filters = None
@@ -647,25 +839,73 @@ TIPS FOR AI AGENTS:
                         help="Output format (default: text, md for Markdown)")
 
     # latest
-    p_latest = subparsers.add_parser("latest", help="Summarize latest run with anomaly detection")
+    p_latest = subparsers.add_parser(
+        "latest",
+        help="Summarize latest run with anomaly detection",
+        description="""Summarize the latest run with optional custom metrics.
+
+Examples:
+  runwise latest                              # Full summary using schema
+  runwise latest -k loss,val_loss,accuracy    # Show only specific metrics
+  runwise latest --no-anomalies               # Skip anomaly detection
+  runwise latest --format md                  # Markdown output
+"""
+    )
+    p_latest.add_argument("-k", "--keys",
+                          help="Comma-separated metric keys to show (bypasses schema)")
     p_latest.add_argument("--no-spark", action="store_true", help="Disable sparklines")
     p_latest.add_argument("--no-anomalies", action="store_true", help="Disable anomaly detection")
     p_latest.add_argument("--format", choices=["text", "md"], default="text",
                           help="Output format (default: text, md for Markdown)")
 
     # run
-    p_run = subparsers.add_parser("run", help="Summarize specific run")
+    p_run = subparsers.add_parser(
+        "run",
+        help="Summarize specific run",
+        description="""Summarize a specific run with optional custom metrics.
+
+Examples:
+  runwise run abc123                          # Full summary using schema
+  runwise run abc123 -k loss,val_loss         # Show only specific metrics
+  runwise run abc123 --no-anomalies           # Skip anomaly detection
+"""
+    )
     p_run.add_argument("run_id", help="Run ID to analyze")
+    p_run.add_argument("-k", "--keys",
+                       help="Comma-separated metric keys to show (bypasses schema)")
     p_run.add_argument("--no-spark", action="store_true", help="Disable sparklines")
     p_run.add_argument("--no-anomalies", action="store_true", help="Disable anomaly detection")
     p_run.add_argument("--format", choices=["text", "md"], default="text",
                        help="Output format (default: text, md for Markdown)")
 
     # compare
-    p_compare = subparsers.add_parser("compare", help="Compare two runs")
-    p_compare.add_argument("run_a", help="First run ID")
-    p_compare.add_argument("run_b", help="Second run ID")
+    p_compare = subparsers.add_parser(
+        "compare",
+        help="Compare two runs",
+        description="""Compare two runs side-by-side.
+
+Supports @step syntax for step-matched comparison (essential for curriculum learning):
+  runwise compare run1@50000 run2@50000      # Compare at same step
+  runwise compare run1@10000 run2@20000      # Compare at different steps
+  runwise compare run1@50000 run2            # Compare run1@50000 vs run2's final
+
+Examples:
+  runwise compare run1 run2                    # Basic comparison (final metrics)
+  runwise compare run1 run2 -f val             # Only validation metrics
+  runwise compare run1 run2 -g                 # Group by metric prefix
+  runwise compare run1 run2 -t 5               # Only show >5% changes
+  runwise compare run1 run2 -d                 # Include config differences
+  runwise compare run1@50000 run2@50000 -f val # Step-matched, validation only
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p_compare.add_argument("run_a", help="First run ID (supports @step syntax, e.g., run1@50000)")
+    p_compare.add_argument("run_b", help="Second run ID (supports @step syntax, e.g., run2@50000)")
     p_compare.add_argument("-f", "--filter", help="Filter metrics by prefix (e.g., 'val', 'train')")
+    p_compare.add_argument("-g", "--group", action="store_true",
+                           help="Group metrics by prefix (train/, val/, etc.)")
+    p_compare.add_argument("-t", "--threshold", type=float,
+                           help="Only show metrics with delta > N%% (e.g., 5 for 5%%)")
     p_compare.add_argument("-d", "--diff", action="store_true", help="Show config differences")
     p_compare.add_argument("--format", choices=["text", "md"], default="text",
                            help="Output format (default: text, md for Markdown)")
@@ -781,13 +1021,48 @@ Examples:
     p_tb.add_argument("--run", "-r", dest="run_id", help="Specific run to analyze")
 
     # W&B API
-    p_api = subparsers.add_parser("api", help="Access W&B runs via cloud API (requires wandb)")
-    p_api.add_argument("--project", "-p", help="W&B project name (required)")
+    p_api = subparsers.add_parser(
+        "api",
+        help="Access W&B runs via cloud API (requires wandb)",
+        description="""Access W&B runs via the cloud API.
+
+Examples:
+  runwise api -p project                       # List runs (auto-detects project if in wandb/)
+  runwise api -p project -r run_id             # Summarize specific run
+  runwise api -p project --best val/accuracy --max   # Find best run by metric
+  runwise api -p project -r run_id --history -k loss,val_loss  # Get history
+  runwise api -p project -c run1,run2          # Compare two runs
+  runwise api -p project -c run1,run2 -f val -t 5    # Compare, filter val metrics >5% change
+  runwise api -p project -c run1,run2 -g -d    # Compare grouped with config diff
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p_api.add_argument("--project", "-p", help="W&B project name (auto-detects from wandb/ if omitted)")
     p_api.add_argument("--entity", "-e", help="W&B entity (username or team)")
     p_api.add_argument("--run", "-r", dest="run_id", help="Specific run to analyze")
     p_api.add_argument("--compare", "-c", help="Compare two runs (comma-separated IDs)")
     p_api.add_argument("--state", "-s", help="Filter by state (running, finished, crashed)")
     p_api.add_argument("-n", "--limit", type=int, default=15, help="Number of runs to show")
+    # History options
+    p_api.add_argument("--history", action="store_true",
+                       help="Get metric history (requires -r and -k)")
+    p_api.add_argument("-k", "--keys", help="Comma-separated metric keys (for --history)")
+    p_api.add_argument("--samples", type=int, default=500,
+                       help="Number of samples for history (default: 500)")
+    # Best run option
+    p_api.add_argument("--best", metavar="METRIC",
+                       help="Find best run by metric (e.g., val/accuracy)")
+    p_api.add_argument("--max", action="store_true",
+                       help="Higher values are better (for --best, default: lower is better)")
+    # Comparison filtering options
+    p_api.add_argument("-f", "--filter",
+                       help="Filter comparison metrics by prefix (e.g., 'val', 'train')")
+    p_api.add_argument("-g", "--group", action="store_true",
+                       help="Group comparison metrics by prefix")
+    p_api.add_argument("-t", "--threshold", type=float,
+                       help="Only show metrics with delta > N%% (for comparison)")
+    p_api.add_argument("-d", "--diff", action="store_true",
+                       help="Show config differences (for comparison)")
 
     args = parser.parse_args()
 

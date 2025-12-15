@@ -59,6 +59,8 @@ Token-efficient trend visualization using Unicode block characters:
 - `sparkline(values, width)` - Convert values to sparkline string (e.g., "▁▂▄▆█")
 - `sparkline_with_stats(values, width)` - Sparkline with first/last values
 - `trend_indicator(values)` - Simple trend arrow (↑/↓/→/~)
+- `calculate_slope(values, steps)` - Robust slope via Theil-Sen estimator (handles noisy data)
+- `calculate_windowed_slopes(values, steps, window)` - Slope over sliding windows
 - `format_metric_with_spark(name, values)` - Full metric line with sparkline
 
 ### Anomaly Detection (anomalies.py)
@@ -110,15 +112,31 @@ Defines how to interpret project-specific metrics:
 ## CLI Commands
 
 ```bash
+# List and summarize runs
 runwise list                          # List runs with sparkline trends
 runwise list --no-spark               # List without sparklines (faster)
 runwise latest                        # Summarize with anomaly detection + sparklines
+runwise latest -k loss,val_loss       # Show only specific metrics (NEW v0.4.0)
 runwise latest --no-anomalies         # Disable anomaly detection
 runwise run <ID>                      # Summarize specific run
+runwise run <ID> -k loss,accuracy     # Show only specific metrics (NEW v0.4.0)
 runwise run <ID> --no-spark           # Without sparklines
-runwise compare <A> <B>               # Compare two runs
-runwise compare <A> <B> -f val        # Compare only validation metrics
+
+# Compare runs (improved in v0.4.0)
+runwise compare <A> <B>               # Compare two runs (full metric names now shown)
+runwise compare <A> <B> -f val        # Filter to validation metrics only
+runwise compare <A> <B> -g            # Group metrics by prefix (train/, val/, etc.)
+runwise compare <A> <B> -t 5          # Only show metrics with >5% delta
 runwise compare <A> <B> -d            # Include config differences
+runwise compare <A> <B> -f val -t 5 -g -d  # Combine all filters
+
+# Step-matched comparison (NEW - essential for curriculum learning)
+runwise compare run1@50000 run2@50000        # Compare at same training step
+runwise compare run1@10000 run2@20000        # Compare at different steps
+runwise compare run1@50000 run2              # Compare run1@50000 vs run2's final
+runwise compare run1@50000 run2@50000 -f val # Step-matched, validation only
+
+# Other local commands
 runwise notes [ID]                    # Show run context (name, notes, tags)
 runwise history [ID]                  # Get downsampled history (auto-detects keys)
 runwise history -k loss,val_loss      # Specify keys explicitly
@@ -126,20 +144,32 @@ runwise stats [ID]                    # Get history statistics (auto-detects key
 runwise stats -k loss,val_loss        # Specify keys explicitly
 runwise keys [ID]                     # List available metric keys
 runwise live                          # Show live training status (includes run ID)
-runwise stability                     # Analyze training stability (rolling std dev)
-runwise stability -k loss,val_loss    # Specify metrics to analyze
+runwise stability -k loss,val_loss    # Analyze training stability (rolling std dev)
 runwise stability -w 50               # Custom window size (default: 100)
 runwise stability --csv               # Output as CSV for further analysis
+
+# Local JSONL logs
 runwise local                         # List local JSONL logs in logs/ directory
 runwise local <file> --keys           # List available metric keys in local log
 runwise local <file> --history -k loss,val_loss  # Get history CSV from local log
 runwise local <file> --stats -k loss,val_loss    # Get statistics from local log
 runwise local <file> --stability -k loss,val_loss  # Stability analysis for local log
-runwise tb                            # List TensorBoard runs (requires tensorboard)
+
+# TensorBoard (requires: pip install tensorboard)
+runwise tb                            # List TensorBoard runs
 runwise tb -r <run_id>                # Summarize specific TensorBoard run
-runwise api -p <project>              # List runs from W&B cloud (requires wandb)
+
+# W&B Cloud API (requires: pip install wandb) - Enhanced in v0.4.0
+runwise api -p <project>              # List runs (auto-detects project from wandb/)
 runwise api -p <project> -r <run_id>  # Summarize specific run from cloud
-runwise api -p <project> --state running  # Filter by state
+runwise api -p <project> -r <run_id> -k loss,val_loss  # Show only specific metrics
+runwise api -p <project> --best val/accuracy --max     # Find best run by metric
+runwise api -p <project> -r <run_id> --history -k loss,val_loss  # Get metric history
+runwise api -p <project> -c run1,run2                  # Compare two runs
+runwise api -p <project> -c run1,run2 -f val -t 5 -g   # Compare with filtering
+runwise api -p <project> --state running               # Filter by state
+
+# Configuration
 runwise init [--name]                 # Initialize runwise.json
 runwise <cmd> --format md             # Output as markdown (list, latest, run, compare)
 ```
@@ -252,15 +282,30 @@ wandb.run.notes = "Updated: found better results with warmup"
 ## MCP Server
 
 The MCP server (`mcp_server/server.py`) exposes these tools:
+
+**Start here:**
+- `health_check` - Quick "how's training going?" tool. Combines status, key metrics, sparklines, and anomaly detection in one call. **START HERE for most queries.**
+
+**Discovery (use first):**
 - `list_runs` - List recent training runs with sparkline trends
-- `analyze_run` - Detailed analysis with anomaly detection + sparklines
+- `list_keys` - **IMPORTANT: Call FIRST before get_history/get_sparkline** to discover available metrics
+
+**Analysis:**
+- `analyze_run` - Detailed analysis with anomaly detection + sparklines (supports `-k keys` for custom metrics)
 - `analyze_latest` - Analyze latest/active run
-- `compare_runs` - Compare two runs
-- `get_run_context` - Get run context (name, notes, tags, group)
-- `live_status` - Live training status
-- `analyze_local_log` - Analyze local log file
-- `detect_anomalies` - Run anomaly detection (returns empty if healthy)
-- `get_sparkline` - Get sparkline visualization for specific metrics
+- `compare_runs` - Compare two runs (supports `@step` syntax for step-matched comparison)
+- `detect_anomalies` - Run anomaly detection (returns empty if healthy - token-efficient)
+
+**History (call list_keys first!):**
+- `get_history` - Get downsampled training history as CSV
+- `get_history_stats` - Statistical summary (min/max/mean/final)
+- `get_sparkline` - Compact sparkline visualization
+
+**Metadata:**
+- `get_config` - Hyperparameters and configuration
+- `get_run_context` - Run context (name, notes, tags, group)
+- `live_status` - Live training status from output.log
+- `find_best_run` - Find best run by a metric
 
 Configure in Claude Code settings:
 ```json

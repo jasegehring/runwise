@@ -157,13 +157,20 @@ runwise stability -k loss,val_loss
 
 **Output:**
 ```
-STABILITY ANALYSIS: abc123 (50,000 steps, window=100)
+STABILITY ANALYSIS: abc123
+Window size: 100 steps | Total: 50,000 steps
 
-Metric           Mean       Std     Min Std    Max Std   Stability
----------------------------------------------------------------------
-loss            0.4521    0.0234     0.0012     0.0891   HIGH
-val_loss        0.5123    0.0456     0.0023     0.1234   MEDIUM
+Metric           Slope/1k  Trend    Avg Std  Final Std     Status
+--------------------------------------------------------------------
+loss             -0.0023      ↓     0.0234     0.0012     STABLE
+val_loss         -0.0015      →     0.0456     0.0089   MODERATE
+
+Slope/1k: change per 1000 steps (robust Theil-Sen estimate)
+Trend: ↓=stabilizing  →=steady  ↑=destabilizing (variance trend)
+Status: STABLE (<5% rel. variance) | MODERATE (5-15%) | NOISY (>15%)
 ```
+
+The **Slope/1k** column shows the rate of change per 1000 training steps, calculated using the Theil-Sen estimator (robust to outliers/noise). Negative values mean the metric is decreasing (good for loss).
 
 ### Stability as CSV
 
@@ -352,12 +359,17 @@ runwise local metrics.jsonl --stability -k loss,val_loss
 
 **Output:**
 ```
-STABILITY ANALYSIS: metrics.jsonl (1,000 records, window=100)
+STABILITY ANALYSIS: metrics.jsonl
+Window size: 100 steps | Total: 1,000 steps
 
-Metric           Mean       Std     Min Std    Max Std   Stability
----------------------------------------------------------------------
-loss            0.8234    0.0456     0.0012     0.0891   HIGH
-val_loss        0.9876    0.0678     0.0034     0.1234   MEDIUM
+Metric           Slope/1k  Trend    Avg Std  Final Std     Status
+--------------------------------------------------------------------
+loss             -0.0156      ↓     0.0456     0.0089     STABLE
+val_loss         -0.0098      →     0.0678     0.0123   MODERATE
+
+Slope/1k: change per 1000 steps (robust Theil-Sen estimate)
+Trend: ↓=stabilizing  →=steady  ↑=destabilizing (variance trend)
+Status: STABLE (<5% rel. variance) | MODERATE (5-15%) | NOISY (>15%)
 ```
 
 ---

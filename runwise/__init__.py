@@ -5,12 +5,18 @@ Parses W&B and local logs, generates condensed summaries optimized for LLM conte
 Includes sparkline visualizations and anomaly detection.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .anomalies import Anomaly, AnomalyConfig, detect_anomalies, format_anomalies
 from .config import MetricSchema, RunwiseConfig
 from .core import RunAnalyzer
-from .sparklines import sparkline, sparkline_with_stats, trend_indicator
+from .sparklines import (
+    calculate_slope,
+    calculate_windowed_slopes,
+    sparkline,
+    sparkline_with_stats,
+    trend_indicator,
+)
 
 # TensorBoard support is optional - import separately
 # from .tensorboard import TensorBoardParser, TENSORBOARD_AVAILABLE
@@ -27,6 +33,8 @@ __all__ = [
     "sparkline",
     "sparkline_with_stats",
     "trend_indicator",
+    "calculate_slope",
+    "calculate_windowed_slopes",
     # Anomaly detection
     "Anomaly",
     "AnomalyConfig",

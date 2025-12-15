@@ -45,6 +45,7 @@ runwise list --no-spark                        # Without sparklines (faster)
 
 # Analyze latest run (includes anomaly detection + sparklines)
 runwise latest
+runwise latest -k loss,val_loss,accuracy       # Show only specific metrics
 runwise latest --no-anomalies                  # Skip anomaly detection
 runwise latest --no-spark                      # Skip sparklines
 
@@ -55,7 +56,14 @@ runwise run abc123xyz --no-spark --no-anomalies
 # Compare two runs
 runwise compare run_a run_b
 runwise compare run_a run_b -f val             # Filter to validation metrics only
+runwise compare run_a run_b -g                 # Group by metric prefix (train/, val/)
+runwise compare run_a run_b -t 5               # Only show >5% changes
 runwise compare run_a run_b -d                 # Show config differences
+
+# Step-matched comparison (essential for curriculum learning)
+runwise compare run_a@50000 run_b@50000        # Compare at same training step
+runwise compare run_a@10000 run_b@20000        # Compare at different steps
+runwise compare run_a@50000 run_b -f val       # Step-matched, validation only
 
 # Show hyperparameters/config
 runwise config                                 # Latest run
@@ -104,8 +112,13 @@ runwise tb                                     # List TB runs
 runwise tb -r train_1                          # Summarize specific TB run
 
 # W&B API support (requires: pip install wandb)
-runwise api --project my-project               # List runs from W&B cloud
-runwise api -p my-project -e my-team -r abc123 # Summarize specific run
+runwise api -p my-project                      # List runs (auto-detects project from wandb/)
+runwise api -p my-project -r abc123            # Summarize specific run
+runwise api -p my-project -r abc123 -k loss,val_loss  # Show specific metrics
+runwise api -p my-project --best val/accuracy --max   # Find best run by metric
+runwise api -p my-project -r run_id --history -k loss # Get metric history
+runwise api -p my-project -c run1,run2         # Compare two runs
+runwise api -p my-project -c run1,run2 -f val -t 5    # Compare with filtering
 runwise api -p my-project --state running      # Filter by state
 
 # Markdown output (for GitHub issues, Notion, etc.)
@@ -357,13 +370,17 @@ Rank   Run ID       State            val_loss
 
 ### Stability Analysis
 ```
-STABILITY ANALYSIS: abc123 (50,000 steps, window=100)
+STABILITY ANALYSIS: abc123
+Window size: 100 steps | Total: 50,000 steps
 
-Metric           Mean       Std     Min Std    Max Std   Stability
----------------------------------------------------------------------
-loss            0.4521    0.0234     0.0012     0.0891   HIGH
-val_loss        0.5123    0.0456     0.0023     0.1234   MEDIUM
-grad_norm       1.2340    0.3210     0.0890     0.8910   LOW
+Metric           Slope/1k  Trend    Avg Std  Final Std     Status
+--------------------------------------------------------------------
+loss             -0.0023      ↓     0.0234     0.0012     STABLE
+val_loss         -0.0015      →     0.0456     0.0089   MODERATE
+grad_norm        +0.0089      ↑     0.3210     0.4521      NOISY
+
+Slope/1k: change per 1000 steps (robust Theil-Sen estimate)
+Trend: ↓=stabilizing  →=steady  ↑=destabilizing (variance trend)
 ```
 
 ## Why "Token-Efficient"?
