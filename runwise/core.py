@@ -37,6 +37,8 @@ class RunInfo:
     notes: str = ""  # Natural language description of what's being tested
     tags: list = None  # Tags like ["sweep", "baseline", "ablation"]
     group: str = ""  # Group name for related runs (e.g., sweep name)
+    # For resumed runs: list of all segment directories (oldest first)
+    segments: list = None  # List of Paths for resumed runs
 
     def __post_init__(self):
         if self.metrics is None:
@@ -45,6 +47,13 @@ class RunInfo:
             self.config = {}
         if self.tags is None:
             self.tags = []
+        if self.segments is None:
+            self.segments = []
+
+    @property
+    def is_resumed(self) -> bool:
+        """Check if this run was resumed (has multiple segments)."""
+        return len(self.segments) > 1
 
 
 class RunAnalyzer:
@@ -93,11 +102,62 @@ class RunAnalyzer:
         return None
 
     def find_run(self, run_id: str) -> Optional[RunInfo]:
-        """Find a specific run by ID."""
+        """
+        Find a specific run by ID.
+
+        If the run was resumed (multiple directories with same ID),
+        combines them into a single RunInfo with segments tracked.
+        """
+        # Find all directories matching this run ID
+        matching_dirs = self._find_all_run_dirs(run_id)
+        if not matching_dirs:
+            return None
+
+        # Sort by timestamp (oldest first)
+        matching_dirs.sort(key=lambda d: d.name)
+
+        # Use the latest directory as the primary (has most recent metadata)
+        primary_dir = matching_dirs[-1]
+        run_info = self._parse_run_dir(primary_dir)
+
+        if run_info:
+            # Track all segments
+            run_info.segments = matching_dirs
+
+            # If resumed, try to get final_step from combined output.logs
+            if run_info.is_resumed and run_info.final_step == 0:
+                run_info.final_step = self._get_max_step_from_segments(matching_dirs)
+
+        return run_info
+
+    def _find_all_run_dirs(self, run_id: str) -> list[Path]:
+        """Find all directories matching a run ID (for resumed runs)."""
+        matching = []
+        if not self.config.wandb_dir.exists():
+            return matching
+
         for d in self.config.wandb_dir.iterdir():
-            if d.is_dir() and (run_id in d.name):
-                return self._parse_run_dir(d)
-        return None
+            if d.is_dir() and d.name.startswith("run-") and run_id in d.name:
+                matching.append(d)
+        return matching
+
+    def _get_max_step_from_segments(self, segments: list[Path]) -> int:
+        """Get the maximum step from output.logs across all segments."""
+        max_step = 0
+        for seg_dir in segments:
+            output_file = seg_dir / "files" / "output.log"
+            if output_file.exists():
+                try:
+                    with open(output_file, 'r') as f:
+                        for line in f:
+                            match = re.search(r'[Ss]tep[:\s]+(\d+)', line)
+                            if match:
+                                step = int(match.group(1))
+                                if step > max_step:
+                                    max_step = step
+                except Exception:
+                    pass
+        return max_step
 
     def _parse_run_dir(self, directory: Path) -> Optional[RunInfo]:
         """Parse a W&B run directory."""
@@ -334,7 +394,10 @@ class RunAnalyzer:
         runtime = summary.get("_runtime", 0)
         runtime_hrs = runtime / 3600 if runtime else 0
         lines.append(f"=== {self.config.project_name} Run Summary ===")
-        lines.append(f"Run: {run.run_id} | Step: {step:,} | Runtime: {runtime_hrs:.1f}h")
+        header_parts = [f"Run: {run.run_id}", f"Step: {step:,}", f"Runtime: {runtime_hrs:.1f}h"]
+        if run.is_resumed:
+            header_parts.append(f"Segments: {len(run.segments)}")
+        lines.append(" | ".join(header_parts))
 
         # Get history for sparklines and anomaly detection
         history = []
@@ -1263,6 +1326,28 @@ class RunAnalyzer:
         ]
         return "\n".join(lines)
 
+    def _get_output_log_files(self, run: RunInfo) -> list[Path]:
+        """
+        Get all output.log files for a run, including from resumed segments.
+
+        Returns files in chronological order (oldest first).
+        """
+        output_files = []
+
+        # Check all segments if run was resumed
+        if run.segments:
+            for seg_dir in run.segments:
+                output_file = seg_dir / "files" / "output.log"
+                if output_file.exists():
+                    output_files.append(output_file)
+        else:
+            # Single directory
+            output_file = run.directory / "files" / "output.log"
+            if output_file.exists():
+                output_files.append(output_file)
+
+        return output_files
+
     def _get_history_from_output_log(
         self,
         run: RunInfo,
@@ -1272,22 +1357,25 @@ class RunAnalyzer:
         """
         Extract history from output.log when wandb-history.jsonl isn't available.
 
+        For resumed runs, combines output.logs from all segments.
+
         Parses common logging patterns like:
         - "Step 1000 | loss: 0.5 | accuracy: 0.8"
         - "{'step': 1000, 'loss': 0.5}"
         """
-        output_file = run.directory / "files" / "output.log"
-        if not output_file.exists():
+        output_files = self._get_output_log_files(run)
+        if not output_files:
             return self._no_history_message(run, keys)
 
-        # First pass: find all lines with metrics
+        # First pass: find all lines with metrics from ALL output.logs
         metric_lines = []
-        with open(output_file, 'r') as f:
-            for line in f:
-                line = line.strip()
-                # Check if line contains any of our keys
-                if any(key in line.lower() for key in [k.lower() for k in keys]):
-                    metric_lines.append(line)
+        for output_file in output_files:
+            with open(output_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    # Check if line contains any of our keys
+                    if any(key in line.lower() for key in [k.lower() for k in keys]):
+                        metric_lines.append(line)
 
         if not metric_lines:
             return f"No metrics matching {keys} found in output.log"
@@ -1686,20 +1774,31 @@ class RunAnalyzer:
         if not latest:
             return "No active run found"
 
+        # Check if this run was resumed (has multiple segments)
+        full_run = self.find_run(latest.run_id)
+        if full_run and full_run.is_resumed:
+            latest = full_run  # Use the combined run info
+
         lines = ["LIVE TRAINING STATUS:", ""]
         lines.append(f"Run ID: {latest.run_id}")
         if latest.name:
             lines.append(f"Name: {latest.name}")
+        if latest.is_resumed:
+            lines.append(f"Segments: {len(latest.segments)} (resumed run)")
         lines.append(f"State: {latest.state}")
         lines.append("")
 
-        output_file = latest.directory / "files" / "output.log"
-        if not output_file.exists():
+        # Get output.log files from all segments
+        output_files = self._get_output_log_files(latest)
+        if not output_files:
             return "\n".join(lines) + "\n(no output.log yet)"
 
-        # Read last 100 lines
-        with open(output_file) as f:
-            recent_lines = f.readlines()[-100:]
+        # Read last 100 lines from ALL output.logs combined (most recent last)
+        recent_lines = []
+        for output_file in output_files:
+            with open(output_file) as f:
+                recent_lines.extend(f.readlines())
+        recent_lines = recent_lines[-100:]
 
         # Parse for latest metrics (generic patterns)
         latest_step = None
