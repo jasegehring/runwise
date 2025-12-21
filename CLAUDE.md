@@ -26,6 +26,11 @@ runwise/
 │   └── parsers/          # Log parsers (placeholder for expansion)
 ├── mcp_server/
 │   └── server.py         # MCP server for Claude Code integration
+├── .claude/
+│   └── skills/
+│       └── runwise/      # Claude Code skill (recommended for Claude Code users)
+│           ├── SKILL.md      # Main instructions and command reference
+│           └── examples.md   # Common workflow examples
 ├── tests/                # pytest tests (94 tests)
 ├── examples/
 │   ├── training_log.jsonl        # Sample JSONL training log
@@ -323,6 +328,35 @@ Configure in Claude Code settings:
 }
 ```
 
+## Claude Code Skill (Recommended)
+
+For Claude Code users, the skill is more token-efficient than MCP (~500 tokens vs ~2000+). The skill invokes CLI commands via Bash.
+
+**Location:** `.claude/skills/runwise/`
+
+**Files:**
+- `SKILL.md` - Main instructions, command reference, zoom-in strategy
+- `examples.md` - Common workflow examples (loaded on-demand)
+
+**How it works:**
+1. Claude auto-discovers the skill based on its description
+2. When user asks about training, Claude loads the skill
+3. Skill guides Claude to invoke CLI commands (e.g., `runwise latest`)
+4. CLI output is already optimized for token efficiency
+
+**When to use Skill vs MCP:**
+
+| Use Case | Best Option |
+|----------|-------------|
+| Claude Code users | Skill (lower tokens, auto-discovery) |
+| Other MCP-compatible tools | MCP server |
+| Programmatic/API access | MCP server |
+
+**To use in your project:**
+```bash
+cp -r .claude/skills/runwise /path/to/your/project/.claude/skills/
+```
+
 ## Testing
 
 Run tests with pytest:
@@ -357,6 +391,7 @@ Before PyPI release:
 - [x] Markdown export (--format md)
 - [x] Example files in /examples
 - [x] README badges (PyPI, CI, License)
+- [x] Claude Code skill for token-efficient integration
 
 Build and publish:
 ```bash

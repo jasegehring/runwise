@@ -167,7 +167,30 @@ print(stats)
 print(analyzer.list_available_keys(run))
 ```
 
-### MCP Server (Claude Code Integration)
+### Claude Code Skill (Recommended)
+
+The most token-efficient way to use Runwise with Claude Code. Copy the skill to your project:
+
+```bash
+# From the runwise repo
+cp -r .claude/skills/runwise /path/to/your/project/.claude/skills/
+
+# Or create manually
+mkdir -p .claude/skills/runwise
+# Copy SKILL.md and examples.md from runwise repo
+```
+
+Claude will automatically discover and use the skill when you ask about training. The skill invokes CLI commands, which is more token-efficient than MCP (~500 tokens vs ~2000+).
+
+**Example prompts:**
+- "How is training going?"
+- "Compare my last two runs"
+- "Is my model overfitting?"
+- "Show me the loss curve"
+
+### MCP Server (Alternative)
+
+For programmatic access or non-Claude Code integrations, use the MCP server.
 
 Add to your Claude Code MCP settings (`~/.claude/settings.json`):
 
@@ -189,6 +212,14 @@ Then in Claude Code, you can ask:
 - "Show me the latest training run"
 - "Compare runs abc and def"
 - "What's the live training status?"
+
+**When to use MCP vs Skill:**
+
+| Use Case | Best Option |
+|----------|-------------|
+| Claude Code users | Skill (lower tokens) |
+| Other MCP-compatible tools | MCP server |
+| Programmatic/API access | MCP server |
 
 ## Configuration
 
