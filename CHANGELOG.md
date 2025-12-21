@@ -5,6 +5,19 @@ All notable changes to Runwise will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2024-12-21
+
+### Added
+- **Resumed run support**: Properly handles runs that were stopped and resumed
+  - Finds all directories with same W&B run ID
+  - Combines output.logs from all segments chronologically
+  - Shows segment count in output: "Segments: 3 (resumed run)"
+  - `runwise history` and `runwise live` now work with resumed runs
+
+### Changed
+- `RunInfo` now tracks `segments` list and `is_resumed` property
+- `find_run()` returns combined info from all matching directories
+
 ## [0.5.1] - 2024-12-21
 
 ### Added
