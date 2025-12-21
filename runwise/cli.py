@@ -457,6 +457,181 @@ def cmd_live(analyzer: RunAnalyzer, args):
     print(analyzer.get_live_status())
 
 
+def cmd_sync(analyzer: RunAnalyzer, args):
+    """Sync W&B runs to recover missing history data."""
+    import subprocess
+    import shutil
+
+    # Check if wandb CLI is available
+    if not shutil.which("wandb"):
+        print("Error: wandb CLI not found")
+        print("")
+        print("Install with: pip install wandb")
+        return
+
+    if args.all:
+        # Sync all unsynced runs
+        print("Syncing all unsynced W&B runs...")
+        result = subprocess.run(
+            ["wandb", "sync", "--sync-all"],
+            cwd=str(analyzer.config.wandb_dir.parent),
+            capture_output=True,
+            text=True
+        )
+        print(result.stdout)
+        if result.stderr:
+            print(result.stderr)
+    elif args.run_id:
+        # Find the run directory
+        run = analyzer.find_run(args.run_id)
+        if not run:
+            print(f"Run '{args.run_id}' not found")
+            return
+
+        print(f"Syncing run {run.run_id}...")
+        result = subprocess.run(
+            ["wandb", "sync", str(run.directory)],
+            capture_output=True,
+            text=True
+        )
+        print(result.stdout)
+        if result.stderr:
+            print(result.stderr)
+
+        # Check if history file now exists
+        history_file = run.directory / "files" / "wandb-history.jsonl"
+        if history_file.exists():
+            print(f"\nSuccess! History file recovered: {history_file}")
+        else:
+            print("\nNote: History file still not found.")
+            print("The run may not have logged any history data.")
+    else:
+        # List runs that might need syncing
+        print("Checking for runs that may need syncing...")
+        print("")
+        needs_sync = []
+        runs = analyzer.list_runs(limit=20)
+        for run in runs:
+            history_file = run.directory / "files" / "wandb-history.jsonl"
+            if not history_file.exists():
+                needs_sync.append(run)
+
+        if needs_sync:
+            print(f"Found {len(needs_sync)} run(s) without history files:")
+            for run in needs_sync:
+                print(f"  {run.run_id} ({run.date}) - {run.state}")
+            print("")
+            print("To sync a specific run:")
+            print(f"  runwise sync {needs_sync[0].run_id}")
+            print("")
+            print("To sync all runs:")
+            print("  runwise sync --all")
+        else:
+            print("All runs have history files.")
+
+
+def cmd_find(analyzer: RunAnalyzer, args):
+    """Find runs by name, tag, or pattern."""
+    pattern = args.pattern.lower()
+    matches = []
+
+    runs = analyzer.list_runs(limit=args.limit)
+    for run in runs:
+        # Check run name
+        if run.name and pattern in run.name.lower():
+            matches.append((run, "name"))
+            continue
+        # Check run ID
+        if pattern in run.run_id.lower():
+            matches.append((run, "id"))
+            continue
+        # Check tags
+        if run.tags:
+            for tag in run.tags:
+                if pattern in tag.lower():
+                    matches.append((run, f"tag:{tag}"))
+                    break
+            else:
+                continue
+            continue
+        # Check group
+        if run.group and pattern in run.group.lower():
+            matches.append((run, "group"))
+            continue
+        # Check notes
+        if run.notes and pattern in run.notes.lower():
+            matches.append((run, "notes"))
+            continue
+
+    if matches:
+        print(f"Found {len(matches)} run(s) matching '{args.pattern}':")
+        print("")
+        print(f"{'ID':<12} {'Name':<20} {'Match':<12} {'Date':<12} {'Steps':>8}")
+        print("-" * 70)
+        for run, match_type in matches:
+            name = (run.name or "(unnamed)")[:20]
+            print(f"{run.run_id:<12} {name:<20} {match_type:<12} {run.date:<12} {run.final_step:>8,}")
+    else:
+        print(f"No runs found matching '{args.pattern}'")
+        print("")
+        print("Search looks in: run name, ID, tags, group, and notes")
+
+
+def cmd_watch(analyzer: RunAnalyzer, args):
+    """Watch live training output with formatted metrics."""
+    import time
+    import sys
+
+    run = analyzer.find_run(args.run_id) if args.run_id else analyzer.get_latest_run()
+    if not run:
+        if args.run_id:
+            print(f"Run '{args.run_id}' not found")
+        else:
+            print("No active run found")
+        return
+
+    output_file = run.directory / "files" / "output.log"
+    if not output_file.exists():
+        print(f"No output.log found for run {run.run_id}")
+        return
+
+    print(f"Watching run {run.run_id} (Ctrl+C to stop)")
+    if run.name:
+        print(f"Name: {run.name}")
+    print("-" * 60)
+
+    # Track file position
+    last_size = 0
+    last_step = 0
+
+    try:
+        while True:
+            current_size = output_file.stat().st_size
+            if current_size > last_size:
+                with open(output_file, 'r') as f:
+                    f.seek(last_size)
+                    new_content = f.read()
+                    last_size = current_size
+
+                    # Parse and format new lines
+                    for line in new_content.strip().split('\n'):
+                        if not line.strip():
+                            continue
+                        # Highlight validation lines
+                        if 'Val' in line or 'val' in line.lower():
+                            print(f"\033[36m{line}\033[0m")  # Cyan for validation
+                        elif 'Error' in line or 'error' in line.lower():
+                            print(f"\033[31m{line}\033[0m")  # Red for errors
+                        elif 'Warning' in line or 'warning' in line.lower():
+                            print(f"\033[33m{line}\033[0m")  # Yellow for warnings
+                        else:
+                            print(line)
+
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        print("\n\nStopped watching.")
+
+
 def cmd_local(analyzer: RunAnalyzer, args):
     """List or analyze local JSONL log files."""
     # If no file specified, list available logs
@@ -975,6 +1150,63 @@ Examples:
     # live
     subparsers.add_parser("live", help="Show live training status")
 
+    # sync
+    p_sync = subparsers.add_parser(
+        "sync",
+        help="Sync W&B runs to recover missing history data",
+        description="""Sync W&B runs to recover wandb-history.jsonl files.
+
+When runs are killed or crash before wandb.finish() is called,
+the history file may be missing. This command uses 'wandb sync'
+to recover the data.
+
+Examples:
+  runwise sync                    # List runs that need syncing
+  runwise sync <run_id>           # Sync specific run
+  runwise sync --all              # Sync all unsynced runs
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p_sync.add_argument("run_id", nargs="?", help="Run ID to sync (optional)")
+    p_sync.add_argument("--all", action="store_true", help="Sync all unsynced runs")
+
+    # find
+    p_find = subparsers.add_parser(
+        "find",
+        help="Find runs by name, tag, or pattern",
+        description="""Search for runs by name, tag, group, or notes.
+
+Examples:
+  runwise find "R008"             # Find runs with R008 in name/ID/tags
+  runwise find "baseline"         # Find runs tagged or named 'baseline'
+  runwise find "learning rate"    # Search in notes
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p_find.add_argument("pattern", help="Pattern to search for (case-insensitive)")
+    p_find.add_argument("-n", "--limit", type=int, default=50, help="Max runs to search (default: 50)")
+
+    # watch
+    p_watch = subparsers.add_parser(
+        "watch",
+        help="Watch live training output (tail -f with formatting)",
+        description="""Watch training output in real-time with syntax highlighting.
+
+Highlights:
+  - Validation lines (cyan)
+  - Errors (red)
+  - Warnings (yellow)
+
+Examples:
+  runwise watch                   # Watch latest run
+  runwise watch <run_id>          # Watch specific run
+  runwise watch --interval 5      # Update every 5 seconds
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p_watch.add_argument("run_id", nargs="?", help="Run ID to watch (uses latest if omitted)")
+    p_watch.add_argument("-i", "--interval", type=float, default=1.0, help="Update interval in seconds (default: 1.0)")
+
     # local
     p_local = subparsers.add_parser(
         "local",
@@ -1093,6 +1325,9 @@ Examples:
         "stability": cmd_stability,
         "keys": cmd_keys,
         "live": cmd_live,
+        "sync": cmd_sync,
+        "find": cmd_find,
+        "watch": cmd_watch,
         "local": cmd_local,
         "init": cmd_init,
         "tb": cmd_tb,

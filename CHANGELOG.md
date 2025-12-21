@@ -5,6 +5,26 @@ All notable changes to Runwise will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2024-12-21
+
+### Added
+- **`runwise sync`**: Recover missing wandb-history.jsonl files
+  - `runwise sync` lists runs needing sync
+  - `runwise sync <run_id>` syncs specific run
+  - `runwise sync --all` syncs all unsynced runs
+- **`runwise find`**: Search runs by name, tag, group, or notes
+  - `runwise find "R008"` searches across all metadata
+- **`runwise watch`**: Live tail of training output with color highlighting
+  - Validation lines highlighted in cyan
+  - Errors in red, warnings in yellow
+- **Validation parsing in `runwise live`**: Now extracts structured validation metrics
+- **Run names in list**: `runwise list` shows Name column when runs have names
+- **Auto-detection of metric keys**: Summaries auto-detect train/loss, train/accuracy patterns
+
+### Changed
+- All "no history file" errors now include sync instructions
+- Improved error messages with actionable recovery steps
+
 ## [0.5.0] - 2024-12-21
 
 ### Added

@@ -70,6 +70,14 @@ runwise stats -k loss,val_loss       # Min/max/mean/final statistics
 runwise stability -k loss,val_loss   # Training stability (rolling std dev)
 ```
 
+### Discovery & Maintenance
+```bash
+runwise find "pattern"               # Search runs by name, tag, notes
+runwise sync                         # List runs missing history files
+runwise sync <run_id>                # Sync run to recover history
+runwise watch                        # Watch live output (tail -f style)
+```
+
 ### Local JSONL Logs
 ```bash
 runwise local                        # List local log files

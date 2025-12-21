@@ -250,6 +250,61 @@ class RunAnalyzer:
 
     # ==================== Summary Generation ====================
 
+    def _auto_detect_keys(self, summary: dict) -> tuple[str, str]:
+        """
+        Auto-detect loss and primary metric keys from summary.
+
+        Returns:
+            (loss_key, primary_metric_key)
+        """
+        # Common loss key patterns (in order of preference)
+        loss_patterns = [
+            "train/loss", "loss", "train_loss", "training_loss",
+            "train/ce_loss", "ce_loss", "cross_entropy_loss",
+        ]
+
+        # Common primary metric patterns
+        primary_patterns = [
+            "train/accuracy", "accuracy", "train_accuracy", "acc",
+            "train/token_accuracy", "token_accuracy",
+            "train/sequence_accuracy", "sequence_accuracy",
+            "val/accuracy", "val_accuracy",
+        ]
+
+        available = set(summary.keys())
+
+        # Find loss key
+        loss_key = self.config.schema.loss_key
+        if loss_key not in available:
+            for pattern in loss_patterns:
+                if pattern in available:
+                    loss_key = pattern
+                    break
+                # Try partial match
+                for key in available:
+                    if pattern in key.lower():
+                        loss_key = key
+                        break
+                if loss_key != self.config.schema.loss_key:
+                    break
+
+        # Find primary metric
+        primary_key = self.config.schema.primary_metric
+        if primary_key not in available:
+            for pattern in primary_patterns:
+                if pattern in available:
+                    primary_key = pattern
+                    break
+                # Try partial match
+                for key in available:
+                    if pattern in key.lower():
+                        primary_key = key
+                        break
+                if primary_key != self.config.schema.primary_metric:
+                    break
+
+        return loss_key, primary_key
+
     def summarize_run(
         self,
         run: RunInfo,
@@ -271,6 +326,9 @@ class RunAnalyzer:
         summary = run.metrics
         schema = self.config.schema
 
+        # Auto-detect keys if schema defaults don't match
+        loss_key, primary_key = self._auto_detect_keys(summary)
+
         # Header
         step = run.final_step
         runtime = summary.get("_runtime", 0)
@@ -288,11 +346,18 @@ class RunAnalyzer:
 
         # Anomaly detection (show first if there are issues)
         if include_anomalies and history:
+            # Try to find val_loss key
+            val_loss_key = "val_loss"
+            for key in summary.keys():
+                if "val" in key.lower() and "loss" in key.lower():
+                    val_loss_key = key
+                    break
+
             anomalies = detect_anomalies(
                 history,
                 config=self.config.anomaly_config,
-                loss_key=schema.loss_key,
-                val_loss_key="val_loss",  # Common default
+                loss_key=loss_key,
+                val_loss_key=val_loss_key,
             )
             if anomalies:
                 lines.append("")
@@ -430,16 +495,30 @@ class RunAnalyzer:
         schema = self.config.schema
         lines = [f"RECENT RUNS ({self.config.project_name}):", ""]
 
-        # Header with trend column
-        if show_sparklines:
-            lines.append(f"{'ID':<12} {'State':<9} {'Date':<12} {'Steps':>8} {schema.primary_metric_name:>12} {'Trend':>12}")
-            lines.append("-" * 72)
+        # Check if any runs have names
+        any_names = any(run.name for run in runs)
+
+        # Header with optional name column
+        if any_names:
+            if show_sparklines:
+                lines.append(f"{'ID':<12} {'Name':<16} {'State':<9} {'Date':<10} {'Steps':>8} {schema.primary_metric_name:>10} {'Trend':>10}")
+                lines.append("-" * 85)
+            else:
+                lines.append(f"{'ID':<12} {'Name':<16} {'State':<9} {'Date':<10} {'Steps':>8} {schema.primary_metric_name:>10}")
+                lines.append("-" * 70)
         else:
-            lines.append(f"{'ID':<12} {'State':<9} {'Date':<12} {'Steps':>8} {schema.primary_metric_name:>12}")
-            lines.append("-" * 60)
+            if show_sparklines:
+                lines.append(f"{'ID':<12} {'State':<9} {'Date':<12} {'Steps':>8} {schema.primary_metric_name:>12} {'Trend':>12}")
+                lines.append("-" * 72)
+            else:
+                lines.append(f"{'ID':<12} {'State':<9} {'Date':<12} {'Steps':>8} {schema.primary_metric_name:>12}")
+                lines.append("-" * 60)
 
         for run in runs:
-            primary_val = run.metrics.get(schema.primary_metric, 0)
+            # Auto-detect keys for this run
+            loss_key, primary_key = self._auto_detect_keys(run.metrics)
+
+            primary_val = run.metrics.get(primary_key, run.metrics.get(schema.primary_metric, 0))
             if isinstance(primary_val, float) and primary_val <= 1:
                 primary_str = f"{primary_val*100:.1f}%"
             else:
@@ -448,18 +527,21 @@ class RunAnalyzer:
             # Format state with visual indicator
             state_str = run.state.upper()[:8]
 
+            # Format name (truncate if too long)
+            name_str = (run.name[:15] if run.name else "")
+
             # Get sparkline for primary metric
             trend_str = ""
             if show_sparklines:
                 try:
                     history = self.get_history_data(
                         run,
-                        keys=[schema.primary_metric, schema.loss_key],
+                        keys=[primary_key, loss_key],
                         samples=20
                     )
                     if history:
                         # Use loss for trend (decreasing is good)
-                        loss_values = [r.get(schema.loss_key) for r in history if schema.loss_key in r]
+                        loss_values = [r.get(loss_key) for r in history if loss_key in r]
                         if loss_values:
                             spark = sparkline(loss_values, width=8)
                             trend = trend_indicator(loss_values)
@@ -467,23 +549,44 @@ class RunAnalyzer:
                 except Exception:
                     trend_str = ""
 
-            if show_sparklines:
-                lines.append(
-                    f"{run.run_id:<12} "
-                    f"{state_str:<9} "
-                    f"{run.date:<12} "
-                    f"{run.final_step:>8,} "
-                    f"{primary_str:>12} "
-                    f"{trend_str:>12}"
-                )
+            if any_names:
+                if show_sparklines:
+                    lines.append(
+                        f"{run.run_id:<12} "
+                        f"{name_str:<16} "
+                        f"{state_str:<9} "
+                        f"{run.date:<10} "
+                        f"{run.final_step:>8,} "
+                        f"{primary_str:>10} "
+                        f"{trend_str:>10}"
+                    )
+                else:
+                    lines.append(
+                        f"{run.run_id:<12} "
+                        f"{name_str:<16} "
+                        f"{state_str:<9} "
+                        f"{run.date:<10} "
+                        f"{run.final_step:>8,} "
+                        f"{primary_str:>10}"
+                    )
             else:
-                lines.append(
-                    f"{run.run_id:<12} "
-                    f"{state_str:<9} "
-                    f"{run.date:<12} "
-                    f"{run.final_step:>8,} "
-                    f"{primary_str:>12}"
-                )
+                if show_sparklines:
+                    lines.append(
+                        f"{run.run_id:<12} "
+                        f"{state_str:<9} "
+                        f"{run.date:<12} "
+                        f"{run.final_step:>8,} "
+                        f"{primary_str:>12} "
+                        f"{trend_str:>12}"
+                    )
+                else:
+                    lines.append(
+                        f"{run.run_id:<12} "
+                        f"{state_str:<9} "
+                        f"{run.date:<12} "
+                        f"{run.final_step:>8,} "
+                        f"{primary_str:>12}"
+                    )
 
             # Show run context on second line if available (token-efficient)
             context_parts = []
@@ -1144,23 +1247,19 @@ class RunAnalyzer:
         lines = [
             f"No history data found for run {run.run_id}",
             "",
-            "Missing files:",
-            "  - wandb-history.jsonl (not found)",
-            "  - output.log (not found)",
+            "Missing: wandb-history.jsonl",
             "",
-            "This commonly happens when:",
-            "  1. Run was killed before wandb.finish() was called",
-            "  2. Run crashed before history was written",
-            "  3. W&B was in offline mode and wasn't synced",
+            "This happens when:",
+            "  - Run was killed before wandb.finish() was called",
+            "  - Run crashed or was interrupted",
+            "  - W&B was in offline mode",
             "",
-            "To fix for future runs:",
-            "  - Use context manager: with wandb.init() as run: ...",
-            "  - Or call wandb.finish() explicitly before exit",
-            "  - For killed runs: wandb sync <run_dir>",
+            "Quick fix:",
+            f"  runwise sync {run.run_id}       # Recover history from W&B",
             "",
-            "Alternatives:",
-            f"  runwise stats {run.run_id}      # Uses wandb-summary.json (final values only)",
-            f"  runwise run {run.run_id}        # Full run summary",
+            "Or use alternatives:",
+            f"  runwise run {run.run_id}        # Summary (uses wandb-summary.json)",
+            f"  runwise live                    # Live status (parses output.log)",
         ]
         return "\n".join(lines)
 
@@ -1250,7 +1349,10 @@ class RunAnalyzer:
         """
         history_file = run.directory / "files" / "wandb-history.jsonl"
         if not history_file.exists():
-            return f"No history file for run {run.run_id}"
+            return (
+                f"No history file for run {run.run_id}\n\n"
+                f"Try: runwise sync {run.run_id}  # Recover history from W&B"
+            )
 
         # Single pass through file collecting stats
         stats = {key: {"values": [], "nan_count": 0} for key in keys}
@@ -1324,7 +1426,10 @@ class RunAnalyzer:
         """
         history_file = run.directory / "files" / "wandb-history.jsonl"
         if not history_file.exists():
-            return f"No history file for run {run.run_id}"
+            return (
+                f"No history file for run {run.run_id}\n\n"
+                f"Try: runwise sync {run.run_id}  # Recover history from W&B"
+            )
 
         # Collect all values for each key
         data = {key: [] for key in keys}
@@ -1477,7 +1582,10 @@ class RunAnalyzer:
         """
         history_file = run.directory / "files" / "wandb-history.jsonl"
         if not history_file.exists():
-            return f"No history file for run {run.run_id}"
+            return (
+                f"No history file for run {run.run_id}\n\n"
+                f"Try: runwise sync {run.run_id}  # Recover history from W&B"
+            )
 
         # Collect all values with steps
         data = {key: [] for key in keys}
@@ -1597,6 +1705,8 @@ class RunAnalyzer:
         latest_step = None
         latest_loss = None
         latest_acc = None
+        latest_lr = None
+        validation_results = {}  # Store most recent validation results
 
         for line in recent_lines:
             line = line.strip()
@@ -1615,6 +1725,36 @@ class RunAnalyzer:
             if acc_match:
                 latest_acc = float(acc_match.group(1))
 
+            lr_match = re.search(r'[Ll][Rr][:\s]+([\d.e+-]+)', line)
+            if lr_match:
+                try:
+                    latest_lr = float(lr_match.group(1))
+                except ValueError:
+                    pass
+
+            # Parse validation lines like:
+            # "Val (Easy) | Token Acc: 0.987 | Seq Acc: 0.941"
+            # "Val (ProteomeTools) | Token: 14.0% | Gain: +0.6%"
+            val_match = re.match(r'Val\s*\(([^)]+)\)\s*\|(.+)', line)
+            if val_match:
+                val_name = val_match.group(1).strip()
+                val_details = val_match.group(2).strip()
+
+                # Parse accuracy values
+                token_match = re.search(r'[Tt]oken[^:]*:\s*([\d.]+)%?', val_details)
+                seq_match = re.search(r'[Ss]eq[^:]*:\s*([\d.]+)%?', val_details)
+
+                result = {}
+                if token_match:
+                    val = float(token_match.group(1))
+                    result['token'] = val if val > 1 else val * 100
+                if seq_match:
+                    val = float(seq_match.group(1))
+                    result['seq'] = val if val > 1 else val * 100
+
+                if result:
+                    validation_results[val_name] = result
+
         if latest_step is not None:
             lines.append(f"Current Step: {latest_step:,}")
         if latest_loss is not None:
@@ -1624,6 +1764,20 @@ class RunAnalyzer:
                 lines.append(f"Accuracy: {latest_acc*100:.1f}%")
             else:
                 lines.append(f"Accuracy: {latest_acc:.1f}%")
+        if latest_lr is not None:
+            lines.append(f"LR: {latest_lr:.2e}")
+
+        # Show validation results if available
+        if validation_results:
+            lines.append("")
+            lines.append("Validation:")
+            for name, result in validation_results.items():
+                parts = []
+                if 'token' in result:
+                    parts.append(f"Token: {result['token']:.1f}%")
+                if 'seq' in result:
+                    parts.append(f"Seq: {result['seq']:.1f}%")
+                lines.append(f"  {name}: {' | '.join(parts)}")
 
         return "\n".join(lines)
 

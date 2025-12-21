@@ -97,8 +97,16 @@ runwise stability --csv                       # Output as CSV
 runwise keys                                   # Latest run
 runwise keys abc123                            # Specific run
 
-# Live training status
+# Live training status (includes validation metrics)
 runwise live
+
+# Discovery and maintenance
+runwise find "pattern"                         # Search by name, tag, group, notes
+runwise sync                                   # List runs missing history files
+runwise sync abc123                            # Sync specific run to recover history
+runwise sync --all                             # Sync all unsynced runs
+runwise watch                                  # Watch live output (tail -f with colors)
+runwise watch -i 5                             # Update every 5 seconds
 
 # Local JSONL logs (standalone files, not W&B)
 runwise local                                  # List logs in logs/ directory

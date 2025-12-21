@@ -148,10 +148,19 @@ runwise history -k loss,val_loss      # Specify keys explicitly
 runwise stats [ID]                    # Get history statistics (auto-detects keys)
 runwise stats -k loss,val_loss        # Specify keys explicitly
 runwise keys [ID]                     # List available metric keys
-runwise live                          # Show live training status (includes run ID)
+runwise live                          # Show live training status (includes validation!)
 runwise stability -k loss,val_loss    # Analyze training stability (rolling std dev)
 runwise stability -w 50               # Custom window size (default: 100)
 runwise stability --csv               # Output as CSV for further analysis
+
+# Discovery & maintenance (NEW v0.5.1)
+runwise find "pattern"                # Search runs by name, tag, group, or notes
+runwise find "R008"                   # Example: find runs containing "R008"
+runwise sync                          # List runs missing history files
+runwise sync <run_id>                 # Sync specific run to recover history
+runwise sync --all                    # Sync all unsynced runs
+runwise watch                         # Watch live training output (tail -f style)
+runwise watch -i 5                    # Update every 5 seconds
 
 # Local JSONL logs
 runwise local                         # List local JSONL logs in logs/ directory
